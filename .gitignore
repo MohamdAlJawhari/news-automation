@@ -1,0 +1,33 @@
+# Dependencies and generated output
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+/web/src/generated/prisma/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# Telegram sessions
+/telegram-reader/session*
+
+# Runtime data
+/n8n-data/
+/web/data/
+/backups/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.dump
+*.backup
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db

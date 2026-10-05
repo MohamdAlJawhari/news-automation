@@ -1,0 +1,310 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PlatformRole {
+  OWNER
+  USER
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+model User {
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  platformRole   PlatformRole   @default(USER)
+  approvalStatus ApprovalStatus @default(PENDING)
+
+  sessions  Session[]
+  accounts  Account[]
+  workspace Workspace?
+
+  @@index([approvalStatus])
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  ipAddress String?
+  userAgent String?
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @default(now()) @updatedAt
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+model Workspace {
+  id   String @id @default(cuid())
+  name String
+
+  ownerId String @unique
+  owner   User   @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+
+  rssEnabled        Boolean @default(false)
+  automationEnabled Boolean @default(false)
+
+  aiSettings WorkspaceAiSettings?
+  aiDrafts AiDraft[]
+  rssFeeds RssFeed[]
+
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @default(now()) @updatedAt
+  sourceChannels SourceChannel[]
+
+  @@map("workspace")
+}
+
+enum ProcessingJobType {
+  RSS_PREPARE
+  TELEGRAM_PREPARE
+}
+
+enum ProcessingJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model SourceChannel {
+  id          String @id @default(cuid())
+  workspaceId String
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+
+  username       String
+  telegramChatId String?
+  title          String?
+  enabled        Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  originalPosts OriginalPost[]
+  rssFeed       RssFeed?
+
+  @@unique([id, workspaceId])
+  @@unique([workspaceId, username])
+  @@unique([workspaceId, telegramChatId])
+  @@index([workspaceId, enabled])
+  @@map("source_channel")
+}
+
+model OriginalPost {
+  id              String @id @default(cuid())
+  workspaceId     String
+  sourceChannelId String
+
+  sourceChannel SourceChannel @relation(fields: [sourceChannelId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+
+  telegramChatId    String
+  telegramMessageId Int
+  sourceUrl         String?
+  originalText      String
+
+  publishedAt DateTime
+  receivedAt  DateTime @default(now())
+
+  aiDraft AiDraft?
+  rssItem RssItem?
+
+  jobs ProcessingJob[]
+
+  @@unique([id, workspaceId])
+  @@unique([workspaceId, telegramChatId, telegramMessageId])
+  @@index([workspaceId, publishedAt])
+  @@index([sourceChannelId, workspaceId])
+  @@map("original_post")
+}
+
+model ProcessingJob {
+  id             String @id @default(cuid())
+  workspaceId    String
+  originalPostId String
+
+  originalPost OriginalPost @relation(fields: [originalPostId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+
+  type   ProcessingJobType
+  status ProcessingJobStatus @default(PENDING)
+
+  attempts    Int      @default(0)
+  availableAt DateTime @default(now())
+
+  lockedUntil DateTime?
+  lockToken   String?
+
+  outcome     String?
+  lastError   String?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([originalPostId, type])
+  @@index([status, availableAt])
+  @@index([status, lockedUntil])
+  @@index([workspaceId, status])
+  @@index([originalPostId, workspaceId])
+  @@map("processing_job")
+}
+
+model RssFeed {
+  id String @id @default(cuid())
+
+  workspaceId String
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+
+  sourceChannelId String @unique
+
+  sourceChannel SourceChannel @relation(fields: [sourceChannelId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+
+  title       String @default("News feed")
+  description String @default("Latest news from selected sources.")
+
+  enabled   Boolean @default(false)
+  tokenHash String? @unique
+
+  headerText String @default("")
+  footerText String @default("")
+
+  removeKeywords String[] @default([])
+  replaceRules   Json     @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  items RssItem[]
+
+  @@unique([sourceChannelId, workspaceId])
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
+  @@map("rss_feed")
+}
+
+model RssItem {
+  id             String @id @default(cuid())
+  workspaceId    String
+  feedId         String
+  originalPostId String
+
+  feed RssFeed @relation(fields: [feedId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+
+  originalPost OriginalPost @relation(fields: [originalPostId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+
+  title       String
+  content     String
+  sourceUrl   String?
+  publishedAt DateTime
+
+  visible Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([originalPostId, workspaceId])
+  @@index([feedId, workspaceId, visible, publishedAt])
+  @@map("rss_item")
+}
+
+model WorkspaceAiSettings {
+  workspaceId String @id
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  enabled Boolean @default(false)
+  systemPrompt String
+  editorialPerspective String @default("")
+  model String @default("gpt-oss:latest")
+  activatedAt DateTime?
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@map("workspace_ai_settings")
+}
+
+enum AiReviewStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+model AiDraft {
+  id String @id @default(cuid())
+  workspaceId String
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  originalPostId String
+  originalPost OriginalPost @relation(fields: [originalPostId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  aiText String
+  finalText String
+  reviewStatus AiReviewStatus @default(PENDING_REVIEW)
+  model String
+  effectivePrompt String
+  settingsRevision Int
+  editRevision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@unique([originalPostId, workspaceId])
+  @@index([workspaceId, createdAt])
+  @@map("ai_draft")
+}
