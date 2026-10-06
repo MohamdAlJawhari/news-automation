@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { BASE_AI_PROMPT } from "../src/lib/ai-prompt";
 import { catchUpDefaultCampaigns } from "../src/lib/default-campaign-catchup";
 // Apply historical migrations, seed legacy history, then apply only the new
 // campaign migration in a disposable schema. Never migrate the main schema.
@@ -55,11 +57,11 @@ async function main() {
   await admin.connect();
   let created = false;
   try {
-    const mainBefore = (await admin.query(`SELECT to_regclass('public.campaign')::oid AS campaign,
+    const mainBefore = (await admin.query(`SELECT to_regclass('public.campaign')::oid AS campaign, to_regclass('public.campaign_ai_settings')::oid AS settings,
       (SELECT jsonb_agg(migration_name ORDER BY migration_name) FROM public._prisma_migrations) AS migrations`)).rows;
     await admin.query(`CREATE SCHEMA "${schema}"`); created = true;
     await admin.query(`SET search_path TO "${schema}"`);
-    const migrations = (await readdir("prisma/migrations", { withFileTypes: true })).filter(e => e.isDirectory()).map(e => e.name).sort();
+    const migrations = (await readdir("prisma/migrations", { withFileTypes: true })).filter(e => e.isDirectory()).map(e => e.name).filter(name => name <= migrationName).sort();
     assert.equal(migrations.at(-1), migrationName, "Update this staged check before adding a subsequent migration.");
     for (const name of migrations.filter(name => name !== migrationName)) await admin.query(await readFile(`prisma/migrations/${name}/migration.sql`, "utf8"));
     for (const [suffix, approval] of [["a", "APPROVED"], ["b", "SUSPENDED"], ["empty", "PENDING"]] as const) {
@@ -70,8 +72,9 @@ async function main() {
       ["campaign-source-on", workspaceId, true, true], ["campaign-source-paused", workspaceId, true, false],
       ["campaign-source-off", workspaceId, false, true], ["campaign-source-foreign", "campaign-workspace-b", false, true],
     ] as const) await db.sourceChannel.create({ data: { id, workspaceId: ws, username: id.replaceAll("-", "_"), telegramAutomationEnabled: automation, enabled: monitoring } });
-    await db.workspaceAiSettings.create({ data: { workspaceId, enabled: true, systemPrompt: "Existing fixture prompt", editorialPerspective: "Saved perspective", revision: 7, activatedAt: new Date(0) } });
-    await db.workspacePublishingSettings.create({ data: { workspaceId, enabled: true, destinationUsername: "campaign_output", destinationChatId: "-10099999", revision: 9, verifiedAt: new Date(0) } });
+    await db.workspaceAiSettings.create({ data: { workspaceId, enabled: true, systemPrompt: "Existing fixture prompt", editorialPerspective: "Saved perspective", revision: 7, activatedAt: new Date(Date.now() - 60000) } });
+    await db.workspacePublishingSettings.create({ data: { workspaceId, enabled: true, destinationUsername: "campaign_output", destinationChatId: "-10099999", revision: 9, verifiedAt: new Date(0), floodWaitUntil: new Date(Date.now() + 600000) } });
+    await db.workspacePublishingSettings.create({ data: { workspaceId: "campaign-workspace-b", enabled: false, destinationUsername: "pending_destination", verificationPending: true, verificationError: "Saved verification error", revision: 6 } });
     await db.rssFeed.create({ data: { id: "campaign-rss-feed", workspaceId, sourceChannelId: "campaign-source-on", enabled: true, tokenHash: "synthetic-rss-hash", headerText: "Existing RSS header", removeKeywords: ["fixture"] } });
     const history = [];
     for (const status of ["QUEUED", "SENDING", "PUBLISHED", "FAILED", "DELIVERY_UNKNOWN"] as const) {
@@ -157,20 +160,79 @@ async function main() {
       SELECT 'duplicate-job', "workspaceId", "originalPostId", 'second-campaign', type FROM processing_job WHERE id = $1`, [legacyJob.id], "23505");
     await db.processingJob.updateMany({ where: { type: "TELEGRAM_PREPARE", originalPostId: { not: legacyPost.id }, status: { in: ["PENDING", "PROCESSING"] } }, data: { availableAt: new Date(Date.now() + 86400000), lockedUntil: new Date(Date.now() + 86400000) } });
     await catchUpDefaultCampaigns(db);
+    const settingsBefore = await snapshot();
+    const protectionBeforeSettings = await protections();
+    const legacyAi = await db.workspaceAiSettings.findUniqueOrThrow({ where: { workspaceId } });
+    const legacyPublishing = await db.workspacePublishingSettings.findUniqueOrThrow({ where: { workspaceId } });
+    await admin.query(await readFile("prisma/migrations/20261006190000_campaign_settings/migration.sql", "utf8"));
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, [...process.execArgv, "scripts/verify-campaign-settings-cutover.ts"], {
+        env: { ...process.env, PGOPTIONS: `-c search_path=${schema}` }, stdio: "inherit",
+      });
+      child.on("error", () => reject(new Error("Isolated cutover verification could not start.")));
+      child.on("exit", code => code === 0 ? resolve() : reject(new Error("Isolated cutover verification failed.")));
+    });
+    assert.deepEqual(await snapshot(), settingsBefore);
+    assert.deepEqual(await protections(), protectionBeforeSettings);
+    for (const legacy of await db.workspacePublishingSettings.findMany()) {
+      const { floodWaitUntil: wait, ...expected } = legacy;
+      const { campaignId: cid, ...actual } = await db.campaignPublishingSettings.findFirstOrThrow({ where: { workspaceId: legacy.workspaceId } }); void cid;
+      assert.deepEqual(actual, expected);
+      assert.equal((await db.workspaceTelegramState.findUniqueOrThrow({ where: { workspaceId: legacy.workspaceId } })).floodWaitUntil?.getTime(), wait?.getTime());
+    }
+    const ai = await db.campaignAiSettings.findUniqueOrThrow({ where: { campaignId: defaultId } });
+    const publishing = await db.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId: defaultId } });
+    const { campaignId: ignoredAiId, ...copiedAi } = ai; void ignoredAiId;
+    const { campaignId: ignoredPublishingId, ...copiedPublishing } = publishing; void ignoredPublishingId;
+    const { floodWaitUntil: oldWait, ...oldPublishingConfig } = legacyPublishing;
+    assert.deepEqual(copiedAi, legacyAi);
+    assert.deepEqual(copiedPublishing, oldPublishingConfig);
+    assert.equal((await db.workspaceTelegramState.findUniqueOrThrow({ where: { workspaceId } })).floodWaitUntil?.getTime(), oldWait?.getTime());
+    const missing = await db.campaignAiSettings.findUniqueOrThrow({ where: { campaignId: "campaign_default_campaign-workspace-empty" } });
+    assert.equal(missing.enabled, false); assert.equal(missing.systemPrompt, BASE_AI_PROMPT); assert.equal(missing.revision, 1); assert.equal(missing.activatedAt, null);
+    const missingPublishing = await db.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId: missing.campaignId } });
+    assert.equal(missingPublishing.enabled, false); assert.equal(missingPublishing.destinationChatId, null); assert.equal(missingPublishing.verificationPending, false);
+    await rejectSql(`UPDATE workspace_ai_settings SET enabled = false WHERE "workspaceId" = $1`, [workspaceId], "P0001");
+    await rejectSql(`UPDATE workspace_publishing_settings SET "floodWaitUntil" = NULL WHERE "workspaceId" = $1`, [workspaceId], "P0001");
+    await rejectSql(`INSERT INTO campaign_ai_settings ("campaignId", "workspaceId", "systemPrompt") VALUES ('second-campaign', $1, 'Invalid')`, ["campaign-workspace-b"], "23503");
+    await rejectSql(`INSERT INTO campaign_publishing_settings ("campaignId", "workspaceId") VALUES ('second-campaign', $1)`, ["campaign-workspace-b"], "23503");
+    console.log("PASS: settings transition preserves every legacy field, activation/revision/destination/verification timestamps, publication snapshots and protections; missing settings are safe; legacy writers and cross-workspace settings fail.");
     process.env.INGEST_WORKSPACE_ID = workspaceId;
     await admin.query(`UPDATE campaign_source SET "telegramAutomationEnabled" = false WHERE "sourceChannelId" = 'campaign-source-on'`);
-    assert(await processTelegramJob(db, async () => "Current runtime still prepares one synthetic draft."));
+    assert(await processTelegramJob(db, async (model, prompt) => { assert.equal(model, legacyAi.model); assert(prompt.includes(legacyAi.systemPrompt)); return "Default still prepares one synthetic draft."; }));
     const prepared = await db.aiDraft.findFirstOrThrow({ where: { originalPostId: legacyPost.id } });
     assert.equal((await admin.query(`SELECT "campaignId" FROM ai_draft WHERE id = $1`, [prepared.id])).rows[0].campaignId, defaultId);
+    assert.equal(prepared.settingsRevision, legacyAi.revision);
+    const oldOriginal = await original();
+    await db.originalPost.update({ where: { id: oldOriginal.id }, data: { receivedAt: new Date(legacyAi.activatedAt!.getTime() - 1) } });
+    const oldBoundaryJob = await db.processingJob.create({ data: { workspaceId, originalPostId: oldOriginal.id, campaignId: defaultId, type: "TELEGRAM_PREPARE" } });
+    assert.equal(await processTelegramJob(db, async () => { throw new Error("Pre-activation history was regenerated."); }), false);
+    assert.equal((await db.processingJob.findUniqueOrThrow({ where: { id: oldBoundaryJob.id } })).attempts, 0);
+    await db.campaignAiSettings.update({ where: { campaignId: defaultId }, data: { enabled: false } });
+    const pausedOriginal = await original();
+    const pausedJob = await db.processingJob.create({ data: { workspaceId, originalPostId: pausedOriginal.id, campaignId: defaultId, type: "TELEGRAM_PREPARE" } });
+    assert.equal(await processTelegramJob(db, async () => { throw new Error("Frozen workspace settings were used instead of disabled campaign settings."); }), false);
+    assert.equal((await db.processingJob.findUniqueOrThrow({ where: { id: pausedJob.id } })).attempts, 0);
+    await db.$executeRaw`UPDATE processing_job SET "availableAt" = clock_timestamp() + interval '1 day' WHERE id = ${pausedJob.id}`;
+    await db.campaignAiSettings.update({ where: { campaignId: defaultId }, data: { enabled: true } });
+    assert.deepEqual(await db.workspaceAiSettings.findUniqueOrThrow({ where: { workspaceId } }), legacyAi);
     await db.aiDraft.update({ where: { id: prepared.id }, data: { reviewStatus: "APPROVED" } });
     // Retained historical sending/unknown rows correctly prevent new dispatch.
     const queuedId = await queuePublication(db, workspaceId, prepared.id, prepared.editRevision);
     assert.equal(await claimPublication(db, workspaceId), null);
+    await db.campaignPublishingSettings.update({ where: { campaignId: defaultId }, data: { enabled: false } });
     const unknown = history.find(p => p.status === "DELIVERY_UNKNOWN")!;
     assert(await recordPublicationResult(db, workspaceId, { id: unknown.id, token: unknown.lockToken!, outcome: "published", chatId: unknown.destinationChatId, messageId: 43, publishedAt: new Date(2000).toISOString() }));
     const sending = history.find(p => p.status === "SENDING")!;
     assert(await recordPublicationResult(db, workspaceId, { id: sending.id, token: sending.lockToken!, outcome: "failed", error: "Synthetic definite rejection" }));
+    assert.equal(await claimPublication(db, workspaceId), null);
+    assert(await recordPublicationResult(db, workspaceId, { id: unknown.id, token: unknown.lockToken!, outcome: "published", chatId: unknown.destinationChatId, messageId: 43, publishedAt: new Date(2000).toISOString() }));
+    await db.campaignPublishingSettings.update({ where: { campaignId: defaultId }, data: { enabled: true } });
+    assert.equal(await claimPublication(db, workspaceId), null); // Shared migrated flood wait still blocks all sends.
+    await db.workspaceTelegramState.update({ where: { workspaceId }, data: { floodWaitUntil: null } });
     const claimed = await claimPublication(db, workspaceId); assert(claimed);
+    assert.equal(claimed.destinationRevision, legacyPublishing.revision);
+    assert.equal(claimed.destinationChatId, legacyPublishing.destinationChatId);
     assert(await recordPublicationResult(db, workspaceId, { id: claimed.id, token: claimed.lockToken!, outcome: "published", chatId: claimed.destinationChatId, messageId: 44, publishedAt: new Date(3000).toISOString() }));
     assert.equal((await db.telegramPublication.findUniqueOrThrow({ where: { id: queuedId } })).status, "QUEUED");
     await db.user.create({ data: { id: "post-migration-user", name: "Legacy writer", email: "post-migration@example.invalid" } });
@@ -178,7 +240,7 @@ async function main() {
     await db.sourceChannel.create({ data: { workspaceId: "post-migration-workspace", username: "post_migration_source" } });
     assert.equal((await admin.query(`SELECT count(*)::int AS count FROM campaign WHERE "workspaceId" = 'post-migration-workspace'`)).rows[0].count, 0);
     console.log("PASS: nullable legacy writes remain supported; catch-up enables Default-only preparation/publishing with unchanged receipts and uniqueness.");
-    const mainAfter = (await admin.query(`SELECT to_regclass('public.campaign')::oid AS campaign,
+    const mainAfter = (await admin.query(`SELECT to_regclass('public.campaign')::oid AS campaign, to_regclass('public.campaign_ai_settings')::oid AS settings,
       (SELECT jsonb_agg(migration_name ORDER BY migration_name) FROM public._prisma_migrations) AS migrations`)).rows;
     assert.deepEqual(mainAfter, mainBefore);
     console.log("PASS: main schema campaign table/migration history unchanged; no Telegram calls or live receipt files accessed.");

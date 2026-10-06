@@ -11,10 +11,10 @@ export async function GET(request: Request) {
   const auth = authenticateIngestReader(request); if (auth.error) return auth.error;
   try {
     const data = await prisma.$transaction(async tx => {
-      const { workspace, settings } = await lockPublishing(tx, auth.workspaceId);
+      const { workspace, settings, telegramState } = await lockPublishing(tx, auth.workspaceId);
       if (!hasAiAccess(workspace) || !connectedWorkspace(auth.workspaceId)) return null;
       const recovery = await tx.telegramPublication.findFirst({ where: { workspaceId: auth.workspaceId, status: "DELIVERY_UNKNOWN", recoveryMessageId: { not: null } } });
-      return { verification: settings?.verificationPending ? { username: settings.destinationUsername, revision: settings.revision } : null, recovery, floodWaitUntil: settings?.floodWaitUntil ?? null };
+      return { verification: settings?.verificationPending ? { username: settings.destinationUsername, revision: settings.revision } : null, recovery, floodWaitUntil: telegramState?.floodWaitUntil ?? null };
     });
     return Response.json(data ?? { verification: null, recovery: null }, { headers: { "Cache-Control": "no-store" } });
   } catch { return Response.json({ error: "Publishing service unavailable." }, { status: 503 }); }
@@ -30,10 +30,10 @@ export async function POST(request: Request) {
     if (body.action === "wait") {
       if (!Number.isSafeInteger(body.seconds) || body.seconds < 1 || body.seconds > 2147483647) return Response.json({ error: "Invalid flood wait." }, { status: 400 });
       await prisma.$transaction(async tx => {
-        const { workspace, settings } = await lockPublishing(tx, auth.workspaceId);
+        const { workspace, settings, telegramState } = await lockPublishing(tx, auth.workspaceId);
         if (!hasAiAccess(workspace) || !settings) return;
         const until = new Date(Date.now() + body.seconds * 1000);
-        if (!settings.floodWaitUntil || settings.floodWaitUntil < until) await tx.workspacePublishingSettings.update({ where: { workspaceId: auth.workspaceId }, data: { floodWaitUntil: until } });
+        if (!telegramState?.floodWaitUntil || telegramState.floodWaitUntil < until) await tx.workspaceTelegramState.update({ where: { workspaceId: auth.workspaceId }, data: { floodWaitUntil: until } });
       });
       return Response.json({ accepted: true });
     }
@@ -44,7 +44,7 @@ export async function POST(request: Request) {
         const { workspace, settings } = await lockPublishing(tx, auth.workspaceId);
         if (!hasAiAccess(workspace) || !settings?.verificationPending || settings.revision !== body.revision || settings.destinationUsername !== body.username) return false;
         const conflict = body.chatId && await tx.sourceChannel.count({ where: { workspaceId: auth.workspaceId, OR: [{ username: body.username }, { telegramChatId: body.chatId }] } });
-        await tx.workspacePublishingSettings.update({ where: { workspaceId: auth.workspaceId }, data: {
+        await tx.campaignPublishingSettings.update({ where: { campaignId_workspaceId: { campaignId: settings.campaignId, workspaceId: auth.workspaceId } }, data: {
           verificationPending: false, destinationChatId: conflict ? null : body.chatId ?? null,
           verifiedAt: body.chatId && !conflict ? new Date() : null,
           verificationError: conflict ? "Destination resolves to a monitored source. Choose another channel." : body.chatId ? null : safeError(body.error),

@@ -26,10 +26,11 @@ export async function savePublishingSettings(_: PublishingState, form: FormData)
       if ((current.settings?.revision ?? 1) !== revision) throw new PublishingError("Settings changed. Reload first.");
       if (await tx.sourceChannel.count({ where: { workspaceId: workspace.id, username } })) throw new PublishingError("The destination cannot also be a monitored source. Choose another channel.");
       const changed = current.settings?.destinationUsername !== username;
-      await tx.workspacePublishingSettings.upsert({ where: { workspaceId: workspace.id },
-        create: { workspaceId: workspace.id, destinationUsername: username, enabled, verificationPending: true },
-        update: { enabled, ...(changed || form.get("verify") === "yes" ? {
-          destinationUsername: username, destinationChatId: null, verifiedAt: null, verificationError: null, verificationPending: true, revision: { increment: 1 },
+      const unconfigured = current.settings!.destinationUsername === "" && current.settings!.destinationChatId === null &&
+        current.settings!.verifiedAt === null && current.settings!.revision === 1;
+      await tx.campaignPublishingSettings.update({ where: { campaignId_workspaceId: { campaignId: current.settings!.campaignId, workspaceId: workspace.id } },
+        data: { enabled, ...(changed || form.get("verify") === "yes" ? {
+          destinationUsername: username, destinationChatId: null, verifiedAt: null, verificationError: null, verificationPending: true, revision: unconfigured ? 1 : { increment: 1 },
         } : {}) } });
     });
     refresh(); return { success: true, message: "Saved. The connected reader verifies requested destinations. Disabling cannot recall a send already in flight." };

@@ -26,7 +26,7 @@ export async function GET(request: Request) {
             },
             select: {
                 id: true,
-                publishingSettings: { select: { destinationChatId: true, destinationUsername: true } },
+                campaigns: { where: { isDefault: true }, select: { publishingSettings: { select: { destinationChatId: true, destinationUsername: true } } } },
                 sourceChannels: {
                     where: { enabled: true },
                     select: {
@@ -46,11 +46,12 @@ export async function GET(request: Request) {
             );
         }
 
+        const settings = workspace.campaigns[0]?.publishingSettings;
         return Response.json(
             {
-                destinationChatId: workspace.publishingSettings?.destinationChatId ?? null,
-                channels: workspace.sourceChannels.filter(source => source.username !== workspace.publishingSettings?.destinationUsername &&
-                  (!source.telegramChatId || source.telegramChatId !== workspace.publishingSettings?.destinationChatId)),
+                destinationChatId: settings?.destinationChatId ?? null,
+                channels: workspace.sourceChannels.filter(source => source.username !== settings?.destinationUsername &&
+                  (!source.telegramChatId || source.telegramChatId !== settings?.destinationChatId)),
             },
             {
                 headers: {

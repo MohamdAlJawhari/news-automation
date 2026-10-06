@@ -111,7 +111,7 @@ async function main() {
       assert.equal((await prisma.campaignSource.findUniqueOrThrow({ where: membershipWhere })).telegramAutomationEnabled, enabled);
     }
     await assert.rejects(prisma.$transaction(tx => syncDefaultMembership(tx, foreign.id, source.id)));
-    await prisma.workspaceAiSettings.create({ data: { workspaceId: workspace.id, systemPrompt: "Fixture", enabled: true, activatedAt: new Date(0) } });
+    await prisma.campaignAiSettings.update({ where: { campaignId: defaultCampaign.id }, data: { systemPrompt: "Fixture", enabled: true, activatedAt: new Date(0) } });
     const ingestion = await load<Routes>("src/app/api/ingestion/posts/route.ts");
     const ingest = (sourceId: string, messageId: number) => ingestion.POST(new Request("http://localhost/api/ingestion/posts", { method: "POST", headers: { "x-ingest-secret": process.env.INGEST_READER_SECRET!, "Content-Type": "application/json" }, body: JSON.stringify({ sourceId, telegramChatId: "-10012345", telegramMessageId: messageId, originalText: "Synthetic original", publishedAt: new Date().toISOString() }) }));
     assert.equal((await ingest(source.id, 1)).status, 201);
@@ -164,7 +164,7 @@ async function main() {
     const otherJob = await prisma.processingJob.create({ data: { workspaceId: workspace.id, originalPostId: otherPost.id, campaignId: other.id, type: "TELEGRAM_PREPARE" } });
     const otherDraft = await prisma.aiDraft.create({ data: { workspaceId: workspace.id, originalPostId: otherPost.id, campaignId: other.id, aiText: "Other", finalText: "Other", model: "fixture", effectivePrompt: "Saved", settingsRevision: 1, reviewStatus: "APPROVED" } });
     assert.equal(await processTelegramJob(prisma, async () => { throw new Error("Other campaign executed."); }), false);
-    await prisma.workspacePublishingSettings.create({ data: { workspaceId: workspace.id, enabled: true, destinationChatId: "-100999999", destinationUsername: "runtime_output", verifiedAt: new Date() } });
+    await prisma.campaignPublishingSettings.update({ where: { campaignId: defaultCampaign.id }, data: { enabled: true, destinationChatId: "-100999999", destinationUsername: "runtime_output", verifiedAt: new Date() } });
     await assert.rejects(queuePublication(prisma, workspace.id, otherDraft.id, otherDraft.editRevision), /Only Default/);
     const publication = await prisma.telegramPublication.create({ data: { workspaceId: workspace.id, draftId: otherDraft.id, draftRevision: otherDraft.editRevision, text: otherDraft.finalText, destinationChatId: "-100999999", destinationUsername: "runtime_output", destinationRevision: 1, randomId: "123456789", status: "QUEUED" } });
     assert.equal(await claimPublication(prisma, workspace.id), null);

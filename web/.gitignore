@@ -42,3 +42,6 @@ next-env.d.ts
 
 /data/
 /src/generated/prisma
+
+# Separate campaign schema/client validation artifacts
+/.campaign-settings-validation/

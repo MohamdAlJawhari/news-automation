@@ -1,3 +1,4 @@
+import { ensureDefaultCampaign } from "../src/lib/default-campaign";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { runInNewContext } from "node:vm";
@@ -50,11 +51,11 @@ export async function checkAiActions(prisma: PrismaClient, draftId: string, work
   const rejected = await actions.saveAiDraft(approved, form({ id: draft.id, revision: String(approved.revision), intent: "reject" }));
   assert(rejected.success); assert.equal((await prisma.aiDraft.findUniqueOrThrow({ where: { id: draft.id } })).reviewStatus, "REJECTED");
 
-  const settings = await prisma.workspaceAiSettings.findUniqueOrThrow({ where: { workspaceId } });
+  const settings = await prisma.campaignAiSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } } });
   const settingFields = { revision: String(settings.revision), systemPrompt: settings.systemPrompt, editorialPerspective: "", model: settings.model, enabled: "on" };
   const settingSaved = await actions.saveAiSettings(initial, form(settingFields));
   assert(settingSaved.success);
-  assert.equal((await prisma.workspaceAiSettings.findUniqueOrThrow({ where: { workspaceId } })).activatedAt?.getTime(), settings.activatedAt?.getTime());
+  assert.equal((await prisma.campaignAiSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } } })).activatedAt?.getTime(), settings.activatedAt?.getTime());
   assert.equal((await actions.saveAiSettings(initial, form(settingFields))).success, false);
   assert.equal((await actions.saveAiSettings(initial, form({ ...settingFields, revision: String(settingSaved.revision), model: "unapproved:latest" }))).success, false);
 
@@ -74,19 +75,19 @@ export async function checkAiActions(prisma: PrismaClient, draftId: string, work
   assert.equal((await actions.saveAiSettings(initial, form(settingFields))).success, false);
   assert.equal((await prisma.aiDraft.findUniqueOrThrow({ where: { id: draft.id } })).reviewStatus, "REJECTED");
   // First activation is server-timed, and subsequent pause/resume preserves it.
-  await prisma.workspaceAiSettings.create({ data: { workspaceId: "foreign-fixture-workspace", systemPrompt: settings.systemPrompt } });
+  await prisma.campaignAiSettings.update({ where: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, "foreign-fixture-workspace"))).id }, data: { systemPrompt: settings.systemPrompt } });
   const oldConnection = process.env.INGEST_WORKSPACE_ID;
   process.env.INGEST_WORKSPACE_ID = "foreign-fixture-workspace";
   try {
     const first = await actions.saveAiSettings(initial, form({ ...settingFields, revision: "1" }));
     assert(first.success);
-    const boundary = (await prisma.workspaceAiSettings.findUniqueOrThrow({ where: { workspaceId: "foreign-fixture-workspace" } })).activatedAt;
+    const boundary = (await prisma.campaignAiSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, "foreign-fixture-workspace"))).id, workspaceId: "foreign-fixture-workspace" } } })).activatedAt;
     assert(boundary);
     const pause = await actions.saveAiSettings(first, form({ ...settingFields, revision: String(first.revision), enabled: "" }));
     assert(pause.success);
     const resumed = await actions.saveAiSettings(pause, form({ ...settingFields, revision: String(pause.revision) }));
     assert(resumed.success);
-    assert.equal((await prisma.workspaceAiSettings.findUniqueOrThrow({ where: { workspaceId: "foreign-fixture-workspace" } })).activatedAt?.getTime(), boundary.getTime());
+    assert.equal((await prisma.campaignAiSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, "foreign-fixture-workspace"))).id, workspaceId: "foreign-fixture-workspace" } } })).activatedAt?.getTime(), boundary.getTime());
   } finally { process.env.INGEST_WORKSPACE_ID = oldConnection; }
   assert(fixture.invalidations.includes("/workspace/ai-drafts"));
   console.log("PASS: real AI actions/guard enforce access, foreign-workspace rejection, stale edits/settings, status-only approval, model allowlist and one-time activation (mocked session/Next adapters, real PostgreSQL).");

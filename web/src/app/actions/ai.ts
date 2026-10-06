@@ -4,7 +4,6 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireWorkspaceAccess } from "@/lib/workspace-access";
 import { connectedWorkspace, LOCAL_MODELS, MAX_AI_TEXT } from "@/lib/ai-config";
-import { BASE_AI_PROMPT } from "@/lib/ai-prompt";
 import { hasAiAccess, lockAiAccess } from "@/lib/ai-db";
 import { BLOCKING_PUBLICATIONS } from "@/lib/publishing-config";
 
@@ -27,15 +26,12 @@ export async function saveAiSettings(previous: AiActionState, form: FormData): P
     const result = await prisma.$transaction(async (tx) => {
       const current = await lockAiAccess(tx, workspace.id);
       if (!hasAiAccess(current)) return null;
-      const settings = await tx.workspaceAiSettings.upsert({
-        where: { workspaceId: workspace.id },
-        create: { workspaceId: workspace.id, systemPrompt: BASE_AI_PROMPT }, update: {},
-      });
+      const settings = current!.aiSettings;
       if (settings.revision !== revision) return null;
       // PostgreSQL clock establishes the one-time boundary; saves/resume preserve it.
       const times = await tx.$queryRaw<{ now: Date }[]>`SELECT clock_timestamp() AS now`;
-      const changed = await tx.workspaceAiSettings.update({
-        where: { workspaceId: workspace.id },
+      const changed = await tx.campaignAiSettings.update({
+        where: { campaignId_workspaceId: { campaignId: settings.campaignId, workspaceId: workspace.id } },
         data: { systemPrompt: systemPrompt.trim(), editorialPerspective: editorialPerspective.trim(), model,
           enabled, revision: { increment: 1 },
           activatedAt: settings.activatedAt ?? (enabled ? times[0].now : null) },

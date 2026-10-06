@@ -66,9 +66,9 @@ async function main() {
     await prisma.user.create({ data: { id: userId, name: "AI fixture", email: "ai-fixture@example.invalid", emailVerified: true, approvalStatus: "APPROVED" } });
     await prisma.workspace.create({ data: { id: workspaceId, ownerId: userId, name: "AI fixture", automationEnabled: true, rssEnabled: true } });
     await prisma.sourceChannel.create({ data: { id: "ai-fixture-source", workspaceId, username: "ai_fixture", telegramAutomationEnabled: true } });
-    const initial = await prisma.workspaceAiSettings.create({ data: { workspaceId, systemPrompt: BASE_AI_PROMPT } });
+    const initial = await prisma.campaignAiSettings.create({ data: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId, systemPrompt: BASE_AI_PROMPT } });
     assert.equal(initial.enabled, false); assert.equal(initial.activatedAt, null);
-    await prisma.workspaceAiSettings.update({ where: { workspaceId }, data: { enabled: true, activatedAt: activation } });
+    await prisma.campaignAiSettings.update({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } }, data: { enabled: true, activatedAt: activation } });
     const older = await post(new Date(activation.getTime() - 1), new Date());
     assert.equal(await processTelegramJob(prisma, async () => { throw new Error("Old post was generated."); }), false);
     assert.equal((await prisma.processingJob.findUniqueOrThrow({ where: { id: older.id } })).attempts, 0);
@@ -111,16 +111,16 @@ async function main() {
       await processTelegramJob(prisma, async () => {
         if (kind === "suspended") await prisma.user.update({ where: { id: userId }, data: { approvalStatus: "SUSPENDED" } });
         if (kind === "automation") await prisma.workspace.update({ where: { id: workspaceId }, data: { automationEnabled: false } });
-        if (kind === "disabled") await prisma.workspaceAiSettings.update({ where: { workspaceId }, data: { enabled: false } });
-        if (kind.startsWith("revision")) await prisma.workspaceAiSettings.update({ where: { workspaceId }, data: { revision: { increment: 1 } } });
+        if (kind === "disabled") await prisma.campaignAiSettings.update({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } }, data: { enabled: false } });
+        if (kind.startsWith("revision")) await prisma.campaignAiSettings.update({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } }, data: { revision: { increment: 1 } } });
         if (kind === "revision-failure") throw new PreparationError("Synthetic transient failure.");
         return "Must be discarded.";
       });
       await checkNoDraft(job);
       await prisma.user.update({ where: { id: userId }, data: { approvalStatus: "APPROVED" } });
       await prisma.workspace.update({ where: { id: workspaceId }, data: { automationEnabled: true } });
-      await prisma.workspaceAiSettings.update({ where: { workspaceId }, data: { enabled: true } });
-      assert.equal((await prisma.workspaceAiSettings.findUniqueOrThrow({ where: { workspaceId } })).activatedAt?.getTime(), activation.getTime());
+      await prisma.campaignAiSettings.update({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } }, data: { enabled: true } });
+      assert.equal((await prisma.campaignAiSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } } })).activatedAt?.getTime(), activation.getTime());
     }
     const blocked = await post();
     await prisma.user.update({ where: { id: userId }, data: { approvalStatus: "SUSPENDED" } });

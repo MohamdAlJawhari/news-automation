@@ -102,7 +102,7 @@ export async function POST(request: Request) {
         try {
             const result = await prisma.$transaction(
                 async (tx) => {
-                    await lockPublishing(tx, workspaceId);
+                    const { settings: publishingSettings } = await lockPublishing(tx, workspaceId);
                     const workspace = await tx.workspace.findFirst({
                         where: {
                             id: workspaceId,
@@ -118,7 +118,6 @@ export async function POST(request: Request) {
                         select: {
                             rssEnabled: true,
                             automationEnabled: true,
-                            publishingSettings: { select: { destinationChatId: true, destinationUsername: true } },
                         },
                     });
 
@@ -153,7 +152,7 @@ export async function POST(request: Request) {
                         };
                     }
 
-                    if (workspace.publishingSettings?.destinationChatId === telegramChatId || workspace.publishingSettings?.destinationUsername === source.username) {
+                    if (publishingSettings?.destinationChatId === telegramChatId || publishingSettings?.destinationUsername === source.username) {
                         return { status: 409, body: { error: "The publishing destination cannot be a source." } };
                     }
 

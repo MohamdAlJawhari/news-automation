@@ -33,8 +33,8 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
   await prisma.$executeRaw`UPDATE processing_job j SET status = 'FAILED',
     "lockToken" = NULL, "lockedUntil" = NULL, "completedAt" = clock_timestamp(),
     "updatedAt" = clock_timestamp(), "lastError" = 'Generation attempts exhausted (including expired claims).'
-    FROM original_post o, workspace_ai_settings s, campaign c
-    WHERE j."workspaceId" = ${workspaceId} AND s."workspaceId" = j."workspaceId"
+    FROM original_post o, campaign_ai_settings s, campaign c
+    WHERE j."workspaceId" = ${workspaceId} AND s."workspaceId" = j."workspaceId" AND s."campaignId" = j."campaignId"
       AND c.id = j."campaignId" AND c."workspaceId" = j."workspaceId" AND c."isDefault"
       AND o.id = j."originalPostId" AND o."workspaceId" = j."workspaceId"
       AND o."receivedAt" > s."activatedAt" AND j.type = 'TELEGRAM_PREPARE'
@@ -48,7 +48,7 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
     JOIN campaign campaign ON campaign.id = j."campaignId" AND campaign."workspaceId" = j."workspaceId" AND campaign."isDefault"
     JOIN workspace w ON w.id = j."workspaceId"
     JOIN "user" u ON u.id = w."ownerId"
-    JOIN workspace_ai_settings s ON s."workspaceId" = w.id
+    JOIN campaign_ai_settings s ON s."workspaceId" = w.id AND s."campaignId" = j."campaignId"
     JOIN source_channel source ON source.id = o."sourceChannelId" AND source."workspaceId" = w.id
     WHERE w.id = ${workspaceId} AND w."automationEnabled" AND u."emailVerified"
       AND u."approvalStatus" = 'APPROVED' AND s.enabled AND o."receivedAt" > s."activatedAt"

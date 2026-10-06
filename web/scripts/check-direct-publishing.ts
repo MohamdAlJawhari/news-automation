@@ -73,10 +73,11 @@ async function main() {
     await prisma.user.create({ data: { id: fixture.userId, name: "Publishing fixture", email: "publishing@example.invalid", emailVerified: true, approvalStatus: "APPROVED" } });
     await prisma.workspace.create({ data: { id: workspaceId, ownerId: fixture.userId, name: "Publishing fixture", automationEnabled: true, rssEnabled: true } });
     await prisma.sourceChannel.create({ data: { id: "publishing-source", workspaceId, username: "publishing_source" } });
-    await prisma.workspaceAiSettings.create({ data: { workspaceId, systemPrompt: "fixture", enabled: true, activatedAt: new Date(0) } });
+    await prisma.campaignAiSettings.create({ data: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId, systemPrompt: "fixture", enabled: true, activatedAt: new Date(0) } });
     const actions = await load<Actions>("src/app/actions/direct-publishing.ts");
     const ai = await load<AiActions>("src/app/actions/ai.ts");
     const sources = await load<Record<string, (form: FormData) => Promise<void>>>("src/app/actions/sources.ts");
+    const channelRoutes = await load<Routes>("src/app/api/ingestion/channels/route.ts");
     const routes = await load<Routes>("src/app/api/reader/publishing/route.ts");
     const api = async (body: Record<string, unknown>, secret = process.env.INGEST_READER_SECRET) => routes.POST(new Request("http://localhost/api/reader/publishing", { method: "POST", headers: { "x-ingest-secret": secret || "", "Content-Type": "application/json" }, body: JSON.stringify(body) }));
     const json = async (body: Record<string, unknown>) => (await api(body)).json();
@@ -86,13 +87,13 @@ async function main() {
     assert.equal((await prisma.sourceChannel.findUniqueOrThrow({ where: { id: "publishing-source" } })).telegramAutomationEnabled, false);
     const settingsFields = { destination: "@news_output_test", revision: "1", enabled: "on" };
     assert((await actions.savePublishingSettings(initial, form(settingsFields))).success);
-    let settings = await prisma.workspacePublishingSettings.findUniqueOrThrow({ where: { workspaceId } });
+    let settings = await prisma.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } } });
     assert.equal(settings.verifiedAt, null);
     assert.equal((await json({ action: "verify", username: "news_output_test", revision: 99, chatId: "-10012345" })).accepted, false);
     assert((await json({ action: "verify", username: "news_output_test", revision: settings.revision, error: "PERMISSION" })).accepted);
-    assert.match((await prisma.workspacePublishingSettings.findUniqueOrThrow({ where: { workspaceId } })).verificationError!, /permission/);
-    assert((await actions.savePublishingSettings(initial, form({ ...settingsFields, verify: "yes" }))).success);
-    settings = await prisma.workspacePublishingSettings.findUniqueOrThrow({ where: { workspaceId } });
+    assert.match((await prisma.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } } })).verificationError!, /permission/);
+    assert((await actions.savePublishingSettings(initial, form({ ...settingsFields, revision: String(settings.revision), verify: "yes" }))).success);
+    settings = await prisma.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } } });
     assert((await json({ action: "verify", username: "news_output_test", revision: settings.revision, chatId: "-10012345" })).accepted);
     assert.equal((await actions.savePublishingSettings(initial, form({ ...settingsFields, revision: String(settings.revision), destination: "publishing_source" }))).success, false);
     await assert.rejects(sources.addWorkspaceSource(form({ channel: "news_output_test" })), /REDIRECT:.*publishing%20destination/);
@@ -113,14 +114,14 @@ async function main() {
       if (kind === "suspended") await prisma.user.update({ where: { id: fixture.userId }, data: { approvalStatus: "SUSPENDED" } });
       if (kind === "unverified") await prisma.user.update({ where: { id: fixture.userId }, data: { emailVerified: false } });
       if (kind === "automation") await prisma.workspace.update({ where: { id: workspaceId }, data: { automationEnabled: false } });
-      if (kind === "publishing") await prisma.workspacePublishingSettings.update({ where: { workspaceId }, data: { enabled: false } });
+      if (kind === "publishing") await prisma.campaignPublishingSettings.update({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } }, data: { enabled: false } });
       if (kind === "source") await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: false } });
       if (kind === "monitoring") await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { enabled: false } });
       assert.equal(await claimPublication(prisma, workspaceId), null);
       if (["suspended", "unverified", "automation"].includes(kind)) await assert.rejects(actions.publishAiDraft(initial, form({ id: d.id, revision: "1" })), /REDIRECT:/);
       await prisma.user.update({ where: { id: fixture.userId }, data: { emailVerified: true, approvalStatus: "APPROVED" } });
       await prisma.workspace.update({ where: { id: workspaceId }, data: { automationEnabled: true } });
-      await prisma.workspacePublishingSettings.update({ where: { workspaceId }, data: { enabled: true } });
+      await prisma.campaignPublishingSettings.update({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } }, data: { enabled: true } });
       await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { enabled: true, telegramAutomationEnabled: true } });
     }
     const claims = await Promise.all([claimPublication(prisma, workspaceId), claimPublication(prisma, workspaceId)]);
@@ -149,8 +150,15 @@ async function main() {
 
     const changed = await draft(); await queuePublication(prisma, workspaceId, changed.id, 1);
     assert((await actions.savePublishingSettings(initial, form({ destination: "another_output", revision: String(settings.revision), enabled: "on" }))).success);
-    settings = await prisma.workspacePublishingSettings.findUniqueOrThrow({ where: { workspaceId } });
+    settings = await prisma.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } } });
     assert((await json({ action: "verify", username: "another_output", revision: settings.revision, chatId: "-10099999" })).accepted);
+    const excludedSource = await prisma.sourceChannel.create({ data: { workspaceId, username: "another_output" } });
+    const channelResponse = await channelRoutes.GET(new Request("http://localhost/api/ingestion/channels", { headers: { "x-ingest-secret": process.env.INGEST_READER_SECRET! } }));
+    assert.equal(channelResponse.status, 200);
+    const channelData = await channelResponse.json();
+    assert.equal(channelData.destinationChatId, "-10099999");
+    assert(!channelData.channels.some((channel: { id: string }) => channel.id === excludedSource.id));
+    await prisma.sourceChannel.delete({ where: { id: excludedSource.id } });
     assert.equal(await claimPublication(prisma, workspaceId), null);
     const oldSnapshot = await prisma.telegramPublication.findFirstOrThrow({ where: { draftId: changed.id } });
     assert.equal(oldSnapshot.status, "FAILED"); assert.equal(oldSnapshot.destinationChatId, "-10012345");
@@ -159,18 +167,24 @@ async function main() {
     assert.equal((await actions.publishAiDraft(initial, form({ id: overlong.id, revision: "1" }))).success, false);
     const flood = await draft(); await queuePublication(prisma, workspaceId, flood.id, 1);
     const floodClaim = (await claimPublication(prisma, workspaceId))!;
+    const sharedWait = new Date(Date.now() + 7200000);
+    await prisma.workspaceTelegramState.update({ where: { workspaceId }, data: { floodWaitUntil: sharedWait } });
     assert(await recordPublicationResult(prisma, workspaceId, { id: floodClaim.id, token: floodClaim.lockToken!, outcome: "flood", seconds: 3600, error: "FLOOD" }));
+    assert.equal((await prisma.workspaceTelegramState.findUniqueOrThrow({ where: { workspaceId } })).floodWaitUntil!.getTime(), sharedWait.getTime());
     const next = await draft(); await queuePublication(prisma, workspaceId, next.id, 1);
     assert.equal(await claimPublication(prisma, workspaceId), null);
     console.log("PASS: destination changes never redirect snapshots, overlong text rejected, flood waits block all workspace sends.");
 
-    await prisma.workspacePublishingSettings.update({ where: { workspaceId }, data: { floodWaitUntil: null } });
+    await prisma.workspaceTelegramState.update({ where: { workspaceId }, data: { floodWaitUntil: null } });
     const recoveryClaim = (await claimPublication(prisma, workspaceId))!;
     assert.equal(recoveryClaim.draftId, next.id);
     await recordPublicationResult(prisma, workspaceId, { id: recoveryClaim.id, token: recoveryClaim.lockToken!, outcome: "unknown" });
     await prisma.telegramPublication.update({ where: { id: recoveryClaim.id }, data: { dispatchedAt: new Date(Date.now() - 660000) } });
+    assert((await actions.savePublishingSettings(initial, form({ destination: "another_output", revision: String(settings.revision), enabled: "" }))).success);
     assert.equal((await actions.recoverTelegramPublication(initial, form({ id: recoveryClaim.id, intent: "none" }))).success, false);
     assert((await actions.recoverTelegramPublication(initial, form({ id: recoveryClaim.id, intent: "none", confirmed: "on" }))).success);
+    assert.equal((await actions.publishAiDraft(initial, form({ id: next.id, revision: "1" }))).success, false);
+    assert((await actions.savePublishingSettings(initial, form({ destination: "another_output", revision: String(settings.revision), enabled: "on" }))).success);
     assert((await actions.publishAiDraft(initial, form({ id: next.id, revision: "1" }))).success);
     const retried = await prisma.telegramPublication.findUniqueOrThrow({ where: { id: recoveryClaim.id } });
     assert.equal(retried.randomId, recoveryClaim.randomId); assert.equal(retried.text, recoveryClaim.text);
@@ -179,9 +193,9 @@ async function main() {
     assert.equal((await prisma.telegramPublication.findUniqueOrThrow({ where: { id: rejectionClaim.id } })).status, "FAILED");
     await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramChatId: "-10055555" } });
     assert((await actions.savePublishingSettings(initial, form({ destination: "another_output", revision: String(settings.revision), enabled: "on", verify: "yes" }))).success);
-    settings = await prisma.workspacePublishingSettings.findUniqueOrThrow({ where: { workspaceId } });
+    settings = await prisma.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } } });
     assert((await json({ action: "verify", username: "another_output", revision: settings.revision, chatId: "-10055555" })).accepted);
-    assert.equal((await prisma.workspacePublishingSettings.findUniqueOrThrow({ where: { workspaceId } })).verifiedAt, null);
+    assert.equal((await prisma.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } } })).verifiedAt, null);
     console.log("PASS: explicit no-send recovery, same random ID on retry, definite rejection and stable destination/source identity exclusion.");
 
     fixture.userId = "foreign-user";

@@ -104,6 +104,10 @@ model Workspace {
   rssEnabled        Boolean @default(false)
   automationEnabled Boolean @default(false)
 
+  campaignAiSettings CampaignAiSettings[]
+  campaignPublishingSettings CampaignPublishingSettings[]
+  telegramState WorkspaceTelegramState?
+  // Retained read-only after campaign-settings cutover.
   aiSettings WorkspaceAiSettings?
   aiDrafts AiDraft[]
   publishingSettings WorkspacePublishingSettings?
@@ -335,6 +339,8 @@ model Campaign {
   isDefault Boolean @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
+  aiSettings CampaignAiSettings?
+  publishingSettings CampaignPublishingSettings?
   sources CampaignSource[]
   aiDrafts AiDraft[]
   processingJobs ProcessingJob[]
@@ -411,4 +417,52 @@ model TelegramPublication {
   @@unique([draftId, draftRevision])
   @@index([workspaceId, status, availableAt])
   @@map("telegram_publication")
+}
+
+// Campaign configuration is authoritative; legacy workspace settings are frozen.
+model CampaignAiSettings {
+  campaignId String @id
+  workspaceId String
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  campaign Campaign @relation(fields: [campaignId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  enabled Boolean @default(false)
+  systemPrompt String
+  editorialPerspective String @default("")
+  model String @default("gpt-oss:latest")
+  activatedAt DateTime?
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@unique([campaignId, workspaceId])
+  @@index([workspaceId])
+  @@map("campaign_ai_settings")
+}
+
+model CampaignPublishingSettings {
+  campaignId String @id
+  workspaceId String
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  campaign Campaign @relation(fields: [campaignId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  enabled Boolean @default(false)
+  destinationUsername String @default("")
+  destinationChatId String?
+  verifiedAt DateTime?
+  verificationError String?
+  verificationPending Boolean @default(false)
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@unique([campaignId, workspaceId])
+  @@index([workspaceId])
+  @@map("campaign_publishing_settings")
+}
+
+// Shared by every send through this workspace's existing connected account.
+model WorkspaceTelegramState {
+  workspaceId String @id
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  floodWaitUntil DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@map("workspace_telegram_state")
 }

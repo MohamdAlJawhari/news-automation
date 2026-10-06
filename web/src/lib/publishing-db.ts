@@ -7,9 +7,13 @@ import { BLOCKING_PUBLICATIONS, MAX_TELEGRAM_TEXT, PublishingError } from "./pub
 
 export async function lockPublishing(tx: Prisma.TransactionClient, workspaceId: string) {
   const workspace = await lockAiAccess(tx, workspaceId);
-  await tx.$queryRaw`SELECT "workspaceId" FROM workspace_publishing_settings WHERE "workspaceId" = ${workspaceId} FOR UPDATE`;
-  const settings = await tx.workspacePublishingSettings.findUnique({ where: { workspaceId } });
-  return { workspace, settings };
+  if (!workspace) return { workspace: null, settings: null, telegramState: null };
+  const campaignId = workspace.defaultCampaign.id;
+  await tx.$queryRaw`SELECT "campaignId" FROM campaign_publishing_settings WHERE "campaignId" = ${campaignId} AND "workspaceId" = ${workspaceId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT "workspaceId" FROM workspace_telegram_state WHERE "workspaceId" = ${workspaceId} FOR UPDATE`;
+  const settings = await tx.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId_workspaceId: { campaignId, workspaceId } } });
+  const telegramState = await tx.workspaceTelegramState.findUniqueOrThrow({ where: { workspaceId } });
+  return { workspace, settings, telegramState };
 }
 
 export async function queuePublication(db: PrismaClient, workspaceId: string, draftId: string, revision: number) {
@@ -43,12 +47,12 @@ export async function queuePublication(db: PrismaClient, workspaceId: string, dr
 
 export async function claimPublication(db: PrismaClient, workspaceId: string) {
   return db.$transaction(async tx => {
-    const { workspace, settings } = await lockPublishing(tx, workspaceId);
+    const { workspace, settings, telegramState } = await lockPublishing(tx, workspaceId);
     // Expiry never authorizes a resend. Keep the token so a late durable receipt can settle it.
     await tx.telegramPublication.updateMany({ where: { workspaceId, status: "SENDING", lockedUntil: { lte: new Date() } },
       data: { status: "DELIVERY_UNKNOWN", lastError: "Sending lease expired. Inspect Telegram and recover explicitly." } });
-    if (!connectedWorkspace(workspaceId) || !hasAiAccess(workspace) || !settings?.enabled || !settings.verifiedAt || settings.verificationPending) return null;
-    if (settings.floodWaitUntil && settings.floodWaitUntil > new Date()) return null;
+    if (!connectedWorkspace(workspaceId) || !hasAiAccess(workspace) || !settings?.enabled || !settings.verifiedAt || settings.verificationPending || !telegramState) return null;
+    if (telegramState.floodWaitUntil && telegramState.floodWaitUntil > new Date()) return null;
     // One outstanding send per workspace, including uncertain sends.
     if (await tx.telegramPublication.count({ where: { workspaceId, status: { in: ["SENDING", "DELIVERY_UNKNOWN"] } } })) return null;
     const candidates = await tx.telegramPublication.findMany({ where: { workspaceId, status: "QUEUED", availableAt: { lte: new Date() },
@@ -87,7 +91,9 @@ export async function recordPublicationResult(db: PrismaClient, workspaceId: str
     } else {
       const status = result.outcome === "flood" ? "QUEUED" : result.outcome === "failed" ? "FAILED" : "DELIVERY_UNKNOWN";
       const availableAt = new Date(Date.now() + Math.max(1, result.seconds || 1) * 1000);
-      if (result.outcome === "flood") await tx.workspacePublishingSettings.update({ where: { workspaceId }, data: { floodWaitUntil: availableAt } });
+      if (result.outcome === "flood") await tx.$executeRaw`UPDATE workspace_telegram_state
+        SET "floodWaitUntil" = GREATEST("floodWaitUntil", ${availableAt}), "updatedAt" = clock_timestamp()
+        WHERE "workspaceId" = ${workspaceId}`;
       await tx.telegramPublication.update({ where: { id: p.id }, data: { status, lockedUntil: null,
         availableAt,
         lastError: result.error || "Delivery requires recovery.", ...(status === "DELIVERY_UNKNOWN" ? {} : { lockToken: null }) } });

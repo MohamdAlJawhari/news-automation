@@ -3,13 +3,12 @@ import { WorkspaceShell } from "@/components/WorkspaceUI";
 import AiSettingsEditor from "@/components/AiSettingsEditor";
 import { requireWorkspaceAccess } from "@/lib/workspace-access";
 import { prisma } from "@/lib/prisma";
-import { BASE_AI_PROMPT } from "@/lib/ai-prompt";
+import { lockAiAccess } from "@/lib/ai-db";
 import { connectedWorkspace, LOCAL_MODELS } from "@/lib/ai-config";
 
 export default async function AiSettingsPage() {
   const { user, workspace } = await requireWorkspaceAccess("automation");
-  const settings = await prisma.workspaceAiSettings.upsert({ where: { workspaceId: workspace.id },
-    create: { workspaceId: workspace.id, systemPrompt: BASE_AI_PROMPT }, update: {} });
+  const settings = (await prisma.$transaction(tx => lockAiAccess(tx, workspace.id)))!.aiSettings;
   const connected = connectedWorkspace(workspace.id);
   return <WorkspaceShell user={user} active="ai-settings">
     <div className="flex flex-wrap justify-between gap-4"><h1>AI preparation settings</h1><Link className="button" href="/workspace/ai-drafts">AI Drafts</Link></div>

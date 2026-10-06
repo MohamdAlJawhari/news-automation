@@ -1,12 +1,13 @@
 import { WorkspaceShell } from "@/components/WorkspaceUI";
 import { PublishingSettingsEditor } from "@/components/DirectPublishingControls";
 import { requireWorkspaceAccess } from "@/lib/workspace-access";
+import { lockPublishing } from "@/lib/publishing-db";
 import { prisma } from "@/lib/prisma";
 import { connectedWorkspace } from "@/lib/ai-config";
 import RefreshButton from "@/components/RefreshButton";
 export default async function PublishingPage() {
   const { user, workspace } = await requireWorkspaceAccess("automation");
-  const settings = await prisma.workspacePublishingSettings.findUnique({ where: { workspaceId: workspace.id } });
+  const settings = (await prisma.$transaction(tx => lockPublishing(tx, workspace.id))).settings;
   return <WorkspaceShell user={user} active="publishing">
     <div className="flex justify-between gap-4"><h1>Telegram publishing</h1><RefreshButton>Refresh status</RefreshButton></div>
     <p className="muted">Approved drafts publish as plain text through the existing connected user account. Save and Approve never send messages.</p>
