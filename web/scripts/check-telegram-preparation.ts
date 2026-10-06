@@ -64,7 +64,7 @@ async function main() {
     for (const migration of migrations) await admin.query(await readFile(`prisma/migrations/${migration}/migration.sql`, "utf8"));
     await prisma.user.create({ data: { id: userId, name: "AI fixture", email: "ai-fixture@example.invalid", emailVerified: true, approvalStatus: "APPROVED" } });
     await prisma.workspace.create({ data: { id: workspaceId, ownerId: userId, name: "AI fixture", automationEnabled: true, rssEnabled: true } });
-    await prisma.sourceChannel.create({ data: { id: "ai-fixture-source", workspaceId, username: "ai_fixture" } });
+    await prisma.sourceChannel.create({ data: { id: "ai-fixture-source", workspaceId, username: "ai_fixture", telegramAutomationEnabled: true } });
     const initial = await prisma.workspaceAiSettings.create({ data: { workspaceId, systemPrompt: BASE_AI_PROMPT } });
     assert.equal(initial.enabled, false); assert.equal(initial.activatedAt, null);
     await prisma.workspaceAiSettings.update({ where: { workspaceId }, data: { enabled: true, activatedAt: activation } });

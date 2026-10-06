@@ -1,7 +1,7 @@
 import Link from "next/link";
 import SignOutButton from "@/components/SignOutButton";
 import type { CurrentAccess } from "@/lib/access";
-export type NavigationSection = "channels" | "review" | "users" | "ai-drafts" | "ai-settings";
+export type NavigationSection = "channels" | "review" | "users" | "ai-drafts" | "ai-settings" | "publishing";
 export default function AppNavigation({
   user,
   active,
@@ -19,6 +19,7 @@ export default function AppNavigation({
       ? [
           { key: "ai-drafts", label: "AI Drafts", href: "/workspace/ai-drafts" },
           { key: "ai-settings", label: "AI settings", href: "/workspace/ai-settings" },
+          { key: "publishing", label: "Publishing", href: "/workspace/publishing" },
         ] : []),
     ...(owner
       ? [

@@ -6,6 +6,7 @@ import { requireWorkspaceAccess } from "@/lib/workspace-access";
 import { connectedWorkspace, LOCAL_MODELS, MAX_AI_TEXT } from "@/lib/ai-config";
 import { BASE_AI_PROMPT } from "@/lib/ai-prompt";
 import { hasAiAccess, lockAiAccess } from "@/lib/ai-db";
+import { BLOCKING_PUBLICATIONS } from "@/lib/publishing-config";
 
 export type AiActionState = { success: boolean; message: string; revision: number };
 
@@ -63,7 +64,8 @@ export async function saveAiDraft(previous: AiActionState, form: FormData): Prom
     const count = await prisma.$transaction(async (tx) => {
       if (!hasAiAccess(await lockAiAccess(tx, workspace.id))) return 0;
       const result = await tx.aiDraft.updateMany({
-        where: { id, workspaceId: workspace.id, editRevision: revision },
+        where: { id, workspaceId: workspace.id, editRevision: revision,
+          publications: { none: { status: { in: [...BLOCKING_PUBLICATIONS] } } } },
         data: { ...(intent === "save" ? { finalText: (finalText as string).trim() } : {}), editRevision: { increment: 1 },
           reviewStatus: intent === "approve" ? "APPROVED" : intent === "reject" ? "REJECTED" : "PENDING_REVIEW" },
       });

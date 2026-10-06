@@ -99,6 +99,7 @@ function createChannelManager(client, config, isStopped) {
 
                     if (
                         cached.id === config.outputId ||
+                        cached.id === data.destinationChatId ||
                         cached.id === config.intakeId
                     ) {
                         throw new Error(

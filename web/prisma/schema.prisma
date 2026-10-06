@@ -106,6 +106,8 @@ model Workspace {
 
   aiSettings WorkspaceAiSettings?
   aiDrafts AiDraft[]
+  publishingSettings WorkspacePublishingSettings?
+  publications TelegramPublication[]
   rssFeeds RssFeed[]
 
   createdAt      DateTime        @default(now())
@@ -138,6 +140,7 @@ model SourceChannel {
   telegramChatId String?
   title          String?
   enabled        Boolean @default(true)
+  telegramAutomationEnabled Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
@@ -304,7 +307,63 @@ model AiDraft {
   editRevision Int @default(1)
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
+  publications TelegramPublication[]
+  @@unique([id, workspaceId])
   @@unique([originalPostId, workspaceId])
   @@index([workspaceId, createdAt])
   @@map("ai_draft")
+}
+
+enum TelegramPublicationStatus {
+  QUEUED
+  SENDING
+  PUBLISHED
+  FAILED
+  DELIVERY_UNKNOWN
+}
+
+model WorkspacePublishingSettings {
+  workspaceId String @id
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  enabled Boolean @default(false)
+  destinationUsername String @default("")
+  destinationChatId String?
+  verifiedAt DateTime?
+  verificationError String?
+  verificationPending Boolean @default(false)
+  floodWaitUntil DateTime?
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@map("workspace_publishing_settings")
+}
+
+model TelegramPublication {
+  id String @id @default(cuid())
+  workspaceId String
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  draftId String
+  draft AiDraft @relation(fields: [draftId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  draftRevision Int
+  text String
+  destinationChatId String
+  destinationUsername String
+  destinationRevision Int
+  randomId String @unique
+  status TelegramPublicationStatus @default(QUEUED)
+  availableAt DateTime @default(now())
+  lockToken String?
+  lockedUntil DateTime?
+  dispatchedAt DateTime?
+  telegramMessageId Int?
+  confirmedChatId String?
+  publishedAt DateTime?
+  lastError String?
+  recoveryMessageId Int?
+  recoveryNote String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@unique([draftId, draftRevision])
+  @@index([workspaceId, status, availableAt])
+  @@map("telegram_publication")
 }

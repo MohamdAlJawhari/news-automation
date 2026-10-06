@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { authenticateIngestReader } from "@/lib/ingest-auth";
+import { lockPublishing } from "@/lib/publishing-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -100,6 +101,7 @@ export async function POST(request: Request) {
         try {
             const result = await prisma.$transaction(
                 async (tx) => {
+                    await lockPublishing(tx, workspaceId);
                     const workspace = await tx.workspace.findFirst({
                         where: {
                             id: workspaceId,
@@ -115,6 +117,7 @@ export async function POST(request: Request) {
                         select: {
                             rssEnabled: true,
                             automationEnabled: true,
+                            publishingSettings: { select: { destinationChatId: true, destinationUsername: true } },
                         },
                     });
 
@@ -147,6 +150,10 @@ export async function POST(request: Request) {
                                 error: "Source is unavailable in this workspace.",
                             },
                         };
+                    }
+
+                    if (workspace.publishingSettings?.destinationChatId === telegramChatId || workspace.publishingSettings?.destinationUsername === source.username) {
+                        return { status: 409, body: { error: "The publishing destination cannot be a source." } };
                     }
 
                     if (

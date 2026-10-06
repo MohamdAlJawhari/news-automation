@@ -2,6 +2,7 @@ const { loadConfig } = require("./config.cjs");
 const { createTelegramClient } = require("./telegram-client.cjs");
 const { createChannelManager } = require("./channel-manager.cjs");
 const { createMessageIngestor } = require("./message-ingestor.cjs");
+const { createPublisher } = require("./publisher.cjs");
 
 async function main() {
     const config = loadConfig();
@@ -10,6 +11,7 @@ async function main() {
     let stopped = false;
     let timer;
     let ingestor;
+    let publisher;
     let refreshTask = Promise.resolve();
 
     let resolveShutdown;
@@ -49,6 +51,8 @@ async function main() {
         );
 
         ingestor.start();
+        publisher = createPublisher(client, config, isStopped);
+        publisher.start();
 
         async function refreshLoop() {
             await channels.refreshChannels();
@@ -78,6 +82,7 @@ async function main() {
 
         try {
             if (ingestor) await ingestor.stop();
+            if (publisher) await publisher.stop();
             await refreshTask;
         } finally {
             await client.disconnect();

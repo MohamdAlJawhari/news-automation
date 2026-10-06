@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
 import { prisma } from "@/lib/prisma";
+import { lockPublishing } from "@/lib/publishing-db";
+import { hasAiAccess } from "@/lib/ai-db";
 import {
     requireSourceManagementAccess,
 } from "@/lib/workspace-access";
@@ -50,7 +52,10 @@ export async function addWorkspaceSource(formData: FormData) {
     let message: string;
 
     try {
-        const result = await prisma.sourceChannel.createMany({
+        const result = await prisma.$transaction(async tx => {
+          const { settings } = await lockPublishing(tx, workspace.id);
+          if (settings?.destinationUsername === username) return { count: -1 };
+          return tx.sourceChannel.createMany({
             data: [
                 {
                     workspaceId: workspace.id,
@@ -58,18 +63,32 @@ export async function addWorkspaceSource(formData: FormData) {
                 },
             ],
             skipDuplicates: true,
+          });
         });
 
         message =
             result.count === 1
                 ? "Source added. Telegram connection verification is pending."
-                : "This source is already in your workspace.";
+                : result.count === -1 ? "The publishing destination cannot be a source." : "This source is already in your workspace.";
     } catch (error) {
         console.error("Adding workspace source failed:", error);
         message = "Could not add the source.";
     }
 
     finish(message);
+}
+
+export async function setSourceTelegramAutomation(formData: FormData) {
+    const { workspace } = await requireSourceManagementAccess();
+    const id = formData.get("sourceId");
+    const enabled = formData.get("enabled") === "true";
+    if (typeof id !== "string" || id.length > 100) finish("Invalid source.");
+    const count = await prisma.$transaction(async tx => {
+        const { workspace: access } = await lockPublishing(tx, workspace.id);
+        if (!hasAiAccess(access)) return 0;
+        return (await tx.sourceChannel.updateMany({ where: { id, workspaceId: workspace.id }, data: { telegramAutomationEnabled: enabled } })).count;
+    });
+    finish(count ? "Telegram automation saved. Collected posts, existing drafts and RSS are preserved. A send already in flight cannot be recalled." : "Source or automation access is unavailable.");
 }
 
 export async function setWorkspaceSourceEnabled(

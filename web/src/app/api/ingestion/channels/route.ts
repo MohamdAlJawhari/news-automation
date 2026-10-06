@@ -26,6 +26,7 @@ export async function GET(request: Request) {
             },
             select: {
                 id: true,
+                publishingSettings: { select: { destinationChatId: true, destinationUsername: true } },
                 sourceChannels: {
                     where: { enabled: true },
                     select: {
@@ -47,7 +48,9 @@ export async function GET(request: Request) {
 
         return Response.json(
             {
-                channels: workspace.sourceChannels,
+                destinationChatId: workspace.publishingSettings?.destinationChatId ?? null,
+                channels: workspace.sourceChannels.filter(source => source.username !== workspace.publishingSettings?.destinationUsername &&
+                  (!source.telegramChatId || source.telegramChatId !== workspace.publishingSettings?.destinationChatId)),
             },
             {
                 headers: {

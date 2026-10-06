@@ -6,6 +6,7 @@ export async function lockAiAccess(tx: Prisma.TransactionClient, workspaceId: st
   await tx.$queryRaw`SELECT u.id FROM "user" u JOIN workspace w ON w."ownerId" = u.id WHERE w.id = ${workspaceId} FOR UPDATE OF u`;
   await tx.$queryRaw`SELECT id FROM workspace WHERE id = ${workspaceId} FOR UPDATE`;
   await tx.$queryRaw`SELECT "workspaceId" FROM workspace_ai_settings WHERE "workspaceId" = ${workspaceId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT id FROM source_channel WHERE "workspaceId" = ${workspaceId} ORDER BY id FOR UPDATE`;
   return tx.workspace.findUnique({
     where: { id: workspaceId },
     include: { owner: true, aiSettings: true },

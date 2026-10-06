@@ -13,6 +13,7 @@ coverage/
 
 # Telegram sessions
 /telegram-reader/session*
+/telegram-reader/publication-receipts/
 
 # Runtime data
 /n8n-data/
@@ -31,3 +32,6 @@ coverage/
 # Operating system files
 .DS_Store
 Thumbs.db
+
+.txt
+project-tree.txt

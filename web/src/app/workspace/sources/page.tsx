@@ -4,6 +4,7 @@ import { requireSourceManagementAccess } from "@/lib/workspace-access";
 import {
   addWorkspaceSource,
   setWorkspaceSourceEnabled,
+  setSourceTelegramAutomation,
 } from "@/app/actions/sources";
 import { WorkspaceShell, ChannelAvatar } from "@/components/WorkspaceUI";
 import SubmitButton from "@/components/SubmitButton";
@@ -41,6 +42,7 @@ export default async function WorkspaceSourcesPage({
       username: true,
       title: true,
       enabled: true,
+      telegramAutomationEnabled: true,
       telegramChatId: true,
       rssFeed: { select: { enabled: true, tokenHash: true } },
       originalPosts: {
@@ -173,6 +175,13 @@ export default async function WorkspaceSourcesPage({
                   </p>
                 </div>
                 <footer className="border-t border-slate-100 pt-4 space-y-3">
+                  <form action={setSourceTelegramAutomation} className="space-y-2">
+                    <input type="hidden" name="sourceId" value={source.id} />
+                    <input type="hidden" name="enabled" value={String(!source.telegramAutomationEnabled)} />
+                    <p className="text-sm">Telegram automation: {source.telegramAutomationEnabled ? "On" : "Off"}</p>
+                    <p className="muted text-sm">Allows new AI preparation and queued Telegram publications from this source. Off preserves originals, drafts and independent RSS processing.</p>
+                    <SubmitButton className="button" disabled={!workspace.automationEnabled}>{source.telegramAutomationEnabled ? "Turn off Telegram automation" : "Turn on Telegram automation"}</SubmitButton>
+                  </form>
                   <p className="muted text-sm">
                     RSS feed:{" "}
                     {!workspace.rssEnabled

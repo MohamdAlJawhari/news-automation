@@ -42,6 +42,8 @@ function loadConfig() {
         }
     }
 
+    const publishingUrl = new URL("/api/reader/publishing", postsUrl).toString();
+
     return {
         apiId,
         apiHash,
@@ -50,6 +52,7 @@ function loadConfig() {
         configUrl,
         postsUrl,
         configSecret,
+        publishingUrl,
     };
 }
 

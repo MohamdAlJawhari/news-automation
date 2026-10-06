@@ -45,8 +45,10 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
     JOIN workspace w ON w.id = j."workspaceId"
     JOIN "user" u ON u.id = w."ownerId"
     JOIN workspace_ai_settings s ON s."workspaceId" = w.id
+    JOIN source_channel source ON source.id = o."sourceChannelId" AND source."workspaceId" = w.id
     WHERE w.id = ${workspaceId} AND w."automationEnabled" AND u."emailVerified"
       AND u."approvalStatus" = 'APPROVED' AND s.enabled AND o."receivedAt" > s."activatedAt"
+      AND source.enabled AND source."telegramAutomationEnabled"
       AND j.type = 'TELEGRAM_PREPARE' AND j.attempts < ${MAX_ATTEMPTS}
       AND ((j.status = 'PENDING' AND j."availableAt" <= clock_timestamp())
         OR (j.status = 'PROCESSING' AND (j."lockedUntil" IS NULL OR j."lockedUntil" <= clock_timestamp())))
@@ -66,9 +68,10 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
       const settings = workspace?.aiSettings;
       const original = await tx.originalPost.findUniqueOrThrow({
         where: { id_workspaceId: { id: claim.originalPostId, workspaceId: claim.workspaceId } },
+        include: { sourceChannel: true },
       });
       if (!connectedWorkspace(claim.workspaceId) || !hasAiAccess(workspace) || !settings?.enabled ||
-          !settings.activatedAt || original.receivedAt <= settings.activatedAt) {
+          !settings.activatedAt || original.receivedAt <= settings.activatedAt || !original.sourceChannel.enabled || !original.sourceChannel.telegramAutomationEnabled) {
         await pause(tx, claim, "Waiting for enabled AI settings and approved automation access.", false);
         return null;
       }
@@ -93,8 +96,9 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
     const outcome = await prisma.$transaction(async (tx) => {
       const workspace = await lockAiAccess(tx, claim.workspaceId);
       if (!await ownsClaim(tx, claim)) return "Claim expired or superseded; result discarded.";
+      const source = await tx.originalPost.findUniqueOrThrow({ where: { id: claim.originalPostId }, include: { sourceChannel: true } });
       if (!connectedWorkspace(claim.workspaceId) || !hasAiAccess(workspace) || !workspace?.aiSettings?.enabled ||
-          workspace.aiSettings.revision !== prepared.revision) {
+          workspace.aiSettings.revision !== prepared.revision || !source.sourceChannel.enabled || !source.sourceChannel.telegramAutomationEnabled) {
         await pause(tx, claim, "Access or AI settings changed; stale result discarded.", true);
         return "Access or settings changed; result discarded.";
       }
@@ -122,8 +126,9 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
     await prisma.$transaction(async (tx) => {
       const workspace = await lockAiAccess(tx, claim.workspaceId);
       if (!await ownsClaim(tx, claim)) return;
+      const source = await tx.originalPost.findUniqueOrThrow({ where: { id: claim.originalPostId }, include: { sourceChannel: true } });
       if (!connectedWorkspace(claim.workspaceId) || !hasAiAccess(workspace) || !workspace?.aiSettings?.enabled ||
-          (generationRevision !== undefined && workspace.aiSettings.revision !== generationRevision)) {
+          (generationRevision !== undefined && workspace.aiSettings.revision !== generationRevision) || !source.sourceChannel.enabled || !source.sourceChannel.telegramAutomationEnabled) {
         await pause(tx, claim, "Access or AI settings changed; waiting for current settings.", attempted);
         return;
       }

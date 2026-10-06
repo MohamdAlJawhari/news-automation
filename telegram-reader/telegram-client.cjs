@@ -16,7 +16,7 @@ function createTelegramClient({ apiId, apiHash }) {
         new StringSession(session),
         apiId,
         apiHash,
-        { connectionRetries: 5, floodSleepThreshold: 0 }
+        { connectionRetries: 5, floodSleepThreshold: 0, requestRetries: 1 }
     );
 
     return client;
