@@ -12,7 +12,8 @@
     "worker:telegram": "tsx scripts/telegram-worker.ts",
     "worker:telegram:once": "tsx scripts/telegram-worker.ts --once",
     "check:telegram": "tsx scripts/check-telegram-preparation.ts",
-    "check:publishing": "tsx scripts/check-direct-publishing.ts"
+    "check:publishing": "tsx scripts/check-direct-publishing.ts",
+    "check:campaign-migration": "tsx scripts/check-campaign-migration.ts"
   },
   "dependencies": {
     "@next/env": "16.3.8",

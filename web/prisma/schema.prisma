@@ -113,6 +113,8 @@ model Workspace {
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @default(now()) @updatedAt
   sourceChannels SourceChannel[]
+  campaigns      Campaign[]
+  campaignSources CampaignSource[]
 
   @@map("workspace")
 }
@@ -147,6 +149,7 @@ model SourceChannel {
 
   originalPosts OriginalPost[]
   rssFeed       RssFeed?
+  campaignSources CampaignSource[]
 
   @@unique([id, workspaceId])
   @@unique([workspaceId, username])
@@ -188,6 +191,9 @@ model ProcessingJob {
   originalPostId String
 
   originalPost OriginalPost @relation(fields: [originalPostId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  // Nullable during the campaign rollout. RSS jobs always leave this null.
+  campaignId String?
+  campaign Campaign? @relation(fields: [campaignId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
 
   type   ProcessingJobType
   status ProcessingJobStatus @default(PENDING)
@@ -210,6 +216,7 @@ model ProcessingJob {
   @@index([status, lockedUntil])
   @@index([workspaceId, status])
   @@index([originalPostId, workspaceId])
+  @@index([campaignId, workspaceId])
   @@map("processing_job")
 }
 
@@ -298,6 +305,10 @@ model AiDraft {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
   originalPostId String
   originalPost OriginalPost @relation(fields: [originalPostId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  // Current writers may omit this until the runtime rollout. Assigned identity
+  // is immutable in SQL, so publications can derive campaign through the draft.
+  campaignId String?
+  campaign Campaign? @relation(fields: [campaignId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
   aiText String
   finalText String
   reviewStatus AiReviewStatus @default(PENDING_REVIEW)
@@ -311,7 +322,41 @@ model AiDraft {
   @@unique([id, workspaceId])
   @@unique([originalPostId, workspaceId])
   @@index([workspaceId, createdAt])
+  @@index([campaignId, workspaceId])
   @@map("ai_draft")
+}
+
+model Campaign {
+  id String @id @default(cuid())
+  workspaceId String
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  name String
+  // SQL enforces at most one default per workspace with a partial unique index.
+  isDefault Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  sources CampaignSource[]
+  aiDrafts AiDraft[]
+  processingJobs ProcessingJob[]
+  @@unique([id, workspaceId])
+  @@index([workspaceId])
+  @@map("campaign")
+}
+
+model CampaignSource {
+  campaignId String
+  sourceChannelId String
+  workspaceId String
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  campaign Campaign @relation(fields: [campaignId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  sourceChannel SourceChannel @relation(fields: [sourceChannelId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  telegramAutomationEnabled Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  @@id([campaignId, sourceChannelId])
+  @@index([workspaceId, campaignId])
+  @@index([sourceChannelId, workspaceId])
+  @@map("campaign_source")
 }
 
 enum TelegramPublicationStatus {
