@@ -1,3 +1,4 @@
+import { isDefaultCampaign } from "@/lib/default-campaign";
 import { prisma } from "@/lib/prisma";
 import { authenticateIngestReader } from "@/lib/ingest-auth";
 import { claimPublication, lockPublishing, recordPublicationResult, type PublicationResult } from "@/lib/publishing-db";
@@ -57,7 +58,7 @@ export async function POST(request: Request) {
       const authorized = await prisma.$transaction(async tx => {
         const { workspace, settings } = await lockPublishing(tx, auth.workspaceId);
         const p = await tx.telegramPublication.findFirst({ where: { id: body.id, workspaceId: auth.workspaceId, lockToken: body.token, status: "SENDING", lockedUntil: { gt: new Date() } }, include: { draft: { include: { originalPost: { include: { sourceChannel: true } } } } } });
-        return Boolean(connectedWorkspace(auth.workspaceId) && hasAiAccess(workspace) && settings?.enabled && settings.verifiedAt && !settings.verificationPending && p &&
+        return Boolean(connectedWorkspace(auth.workspaceId) && hasAiAccess(workspace) && settings?.enabled && settings.verifiedAt && !settings.verificationPending && p && await isDefaultCampaign(tx, auth.workspaceId, p.draft.campaignId) &&
           settings.revision === p.destinationRevision && settings.destinationChatId === p.destinationChatId &&
           p.draft.reviewStatus === "APPROVED" && p.draft.editRevision === p.draftRevision && p.text === p.draft.finalText &&
           p.draft.originalPost.sourceChannel.enabled && p.draft.originalPost.sourceChannel.telegramAutomationEnabled);

@@ -1,3 +1,4 @@
+import { ensureDefaultCampaign } from "../src/lib/default-campaign";
 // Real PostgreSQL in a disposable schema; session/Next boundaries are mocked.
 // No Telegram connection, credentials or network sends are used by this check.
 import { loadEnvConfig } from "@next/env";
@@ -60,7 +61,7 @@ const initial = { success: false, message: "" };
 let sequence = 1;
 async function draft() {
   const original = await prisma.originalPost.create({ data: { workspaceId, sourceChannelId: "publishing-source", telegramChatId: "-10055555", telegramMessageId: sequence++, originalText: "Synthetic original", publishedAt: new Date(), receivedAt: new Date() } });
-  return prisma.aiDraft.create({ data: { workspaceId, originalPostId: original.id, aiText: "Synthetic rewrite", finalText: "Exact saved text *literal*", model: "mock", effectivePrompt: "fixture", settingsRevision: 1, reviewStatus: "APPROVED" } });
+  return prisma.aiDraft.create({ data: { workspaceId, originalPostId: original.id, campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, aiText: "Synthetic rewrite", finalText: "Exact saved text *literal*", model: "mock", effectivePrompt: "fixture", settingsRevision: 1, reviewStatus: "APPROVED" } });
 }
 async function main() {
   await admin.connect();
@@ -193,12 +194,12 @@ async function main() {
     fixture.userId = "publishing-user";
     // Source off prevents generation; switching it off during generation discards the result.
     const original = (await draft()).originalPostId;
-    await prisma.processingJob.create({ data: { workspaceId, originalPostId: original, type: "TELEGRAM_PREPARE" } });
+    await prisma.processingJob.create({ data: { workspaceId, originalPostId: original, type: "TELEGRAM_PREPARE", campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id } });
     await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: false } });
     assert.equal(await processTelegramJob(prisma, async () => { throw new Error("must not generate"); }), false);
     // Use a separate original with no existing draft for the commit-time pause test.
     const fresh = await prisma.originalPost.create({ data: { workspaceId, sourceChannelId: "publishing-source", telegramChatId: "-10055555", telegramMessageId: sequence++, originalText: "Synthetic", publishedAt: new Date() } });
-    await prisma.processingJob.create({ data: { workspaceId, originalPostId: fresh.id, type: "TELEGRAM_PREPARE" } });
+    await prisma.processingJob.create({ data: { workspaceId, originalPostId: fresh.id, type: "TELEGRAM_PREPARE", campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id } });
     await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: true } });
     await processTelegramJob(prisma, async () => "unused existing draft");
     await processTelegramJob(prisma, async () => { await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: false } }); return "must discard"; });

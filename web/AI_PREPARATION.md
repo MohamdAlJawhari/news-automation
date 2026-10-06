@@ -1,5 +1,7 @@
 # PostgreSQL AI preparation stage
 
+Default-campaign runtime assignment and stopped-worker catch-up are documented in [DEFAULT_CAMPAIGN_RUNTIME.md](./DEFAULT_CAMPAIGN_RUNTIME.md). Workspace settings and source automation remain authoritative; only Default campaign drafts/jobs execute in this stage.
+
 AI settings are at `/workspace/ai-settings`; PostgreSQL review is at `/workspace/ai-drafts`. Both require verified, approved workspace access and automation permission. The navigation calls the review page **AI Drafts**. The owner-only SQLite/n8n workflow remains at `/review`, including its independent publishing and auto-publish controls.
 
 AI preparation never calls Telegram. Approve and Reject change only the review status (and concurrency revision/timestamps). Save changes final text and returns it to pending review. Save edits before approving or rejecting. Manual direct publishing is a separate Publish action; see [DIRECT_PUBLISHING.md](./DIRECT_PUBLISHING.md). Sources now also require the default-off Telegram automation toggle for AI preparation; monitoring and RSS remain independent. Publication locks prevent editing or review changes while a post is queued, sending, uncertain, or published.

@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "../generated/prisma/client";
 import { lockAiAccess, hasAiAccess } from "./ai-db";
+import { isDefaultCampaign } from "./default-campaign";
 import { connectedWorkspace } from "./ai-config";
 import { BLOCKING_PUBLICATIONS, MAX_TELEGRAM_TEXT, PublishingError } from "./publishing-config";
 
@@ -19,6 +20,7 @@ export async function queuePublication(db: PrismaClient, workspaceId: string, dr
       throw new PublishingError("Enable publishing and verify the destination first.");
     const draft = await tx.aiDraft.findFirst({ where: { id: draftId, workspaceId }, include: { originalPost: { include: { sourceChannel: true } }, publications: true } });
     if (!draft || draft.editRevision !== revision || draft.reviewStatus !== "APPROVED") throw new PublishingError("Reload and approve the saved draft before publishing.");
+    if (!await isDefaultCampaign(tx, workspaceId, draft.campaignId)) throw new PublishingError("Only Default campaign drafts can publish in this stage. Unassigned drafts require stopped-worker catch-up.");
     if (!draft.originalPost.sourceChannel.enabled || !draft.originalPost.sourceChannel.telegramAutomationEnabled)
       throw new PublishingError("Enable source monitoring and Telegram automation for this source first.");
     if (!draft.finalText.trim() || draft.finalText.length > MAX_TELEGRAM_TEXT) throw new PublishingError("Telegram plain text must contain 1–4,096 UTF-16 characters. Edit, save and approve shorter text.");
@@ -57,6 +59,7 @@ export async function claimPublication(db: PrismaClient, workspaceId: string) {
         await tx.telegramPublication.update({ where: { id: p.id }, data: { status: "FAILED", lastError: "Destination settings changed. This snapshot was not redirected or sent." } });
         continue;
       }
+      if (!await isDefaultCampaign(tx, workspaceId, p.draft.campaignId)) continue;
       const source = p.draft.originalPost.sourceChannel;
       if (!source.enabled || !source.telegramAutomationEnabled) continue;
       if (p.draft.reviewStatus !== "APPROVED" || p.draft.editRevision !== p.draftRevision || p.text !== p.draft.finalText || p.text.length > MAX_TELEGRAM_TEXT) {

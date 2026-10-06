@@ -1,3 +1,4 @@
+import { syncDefaultMembership } from "@/lib/default-campaign";
 import { prisma } from "@/lib/prisma";
 import { authenticateIngestReader } from "@/lib/ingest-auth";
 import { lockPublishing } from "@/lib/publishing-db";
@@ -184,6 +185,7 @@ export async function POST(request: Request) {
                         });
                     }
 
+                    const campaign = await syncDefaultMembership(tx, workspaceId, source.id);
                     const inserted = await tx.originalPost.createMany({
                         data: [
                             {
@@ -240,6 +242,7 @@ export async function POST(request: Request) {
                         data: jobTypes.map((type) => ({
                             workspaceId,
                             originalPostId: original.id,
+                            campaignId: type === "TELEGRAM_PREPARE" ? campaign.id : null,
                             type,
                         })),
                     });

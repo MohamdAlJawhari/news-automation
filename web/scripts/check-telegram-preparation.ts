@@ -1,3 +1,4 @@
+import { ensureDefaultCampaign } from "../src/lib/default-campaign";
 // Integration checks use a disposable PostgreSQL schema and synthetic posts.
 // Generation is mocked unless --ollama is supplied. No Telegram requests occur.
 import { loadEnvConfig } from "@next/env";
@@ -34,7 +35,7 @@ async function post(receivedAt = new Date(), publishedAt = new Date(0)) {
     telegramMessageId: messageId++, originalText: "According to the city council, the library reopened on Monday.",
     receivedAt, publishedAt,
   } });
-  return prisma.processingJob.create({ data: { workspaceId, originalPostId: original.id, type: "TELEGRAM_PREPARE" } });
+  return prisma.processingJob.create({ data: { workspaceId, originalPostId: original.id, campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, type: "TELEGRAM_PREPARE" } });
 }
 async function checkNoDraft(job: { id: string; originalPostId: string }) {
   assert.equal(await prisma.aiDraft.count({ where: { originalPostId: job.originalPostId } }), 0);
@@ -74,6 +75,7 @@ async function main() {
     const fresh = await post();
     await processTelegramJob(prisma, async () => "According to the council, the library reopened Monday.");
     let draft = await prisma.aiDraft.findUniqueOrThrow({ where: { originalPostId_workspaceId: { originalPostId: fresh.originalPostId, workspaceId } } });
+    assert.equal(draft.campaignId, fresh.campaignId);
     assert.equal(draft.reviewStatus, "PENDING_REVIEW"); assert.equal(draft.settingsRevision, 1);
     await prisma.aiDraft.update({ where: { id: draft.id }, data: { finalText: "Manual review text", editRevision: { increment: 1 } } });
     await prisma.processingJob.update({ where: { id: fresh.id }, data: { status: "PENDING" } });

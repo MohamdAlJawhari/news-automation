@@ -1,3 +1,4 @@
+import { catchUpDefaultCampaigns } from "../src/lib/default-campaign-catchup";
 // Apply historical migrations, seed legacy history, then apply only the new
 // campaign migration in a disposable schema. Never migrate the main schema.
 import { loadEnvConfig } from "@next/env";
@@ -54,7 +55,7 @@ async function main() {
   await admin.connect();
   let created = false;
   try {
-    const mainBefore = (await admin.query(`SELECT to_regclass('public.campaign')::text AS campaign,
+    const mainBefore = (await admin.query(`SELECT to_regclass('public.campaign')::oid AS campaign,
       (SELECT jsonb_agg(migration_name ORDER BY migration_name) FROM public._prisma_migrations) AS migrations`)).rows;
     await admin.query(`CREATE SCHEMA "${schema}"`); created = true;
     await admin.query(`SET search_path TO "${schema}"`);
@@ -141,7 +142,7 @@ async function main() {
       SELECT 'duplicate-revision', "workspaceId", "draftId", "draftRevision", text, "destinationChatId", "destinationUsername", "destinationRevision", '987654321', 'FAILED' FROM telegram_publication WHERE id = $1`, [published.id], "23505");
     console.log("PASS: multiple same-workspace memberships, default/pair uniqueness, workspace foreign keys, RSS exclusion, immutable campaign lineage and all existing publication protections.");
 
-    // Current application writers omit campaignId. They must still work.
+    // Legacy writers can still omit campaignId until stopped-worker catch-up.
     const legacyDraft = await draft();
     const legacyPost = await original();
     const legacyJob = await db.processingJob.create({ data: { workspaceId, originalPostId: legacyPost.id, type: "TELEGRAM_PREPARE" } });
@@ -155,11 +156,12 @@ async function main() {
     await rejectSql(`INSERT INTO processing_job (id, "workspaceId", "originalPostId", "campaignId", type)
       SELECT 'duplicate-job', "workspaceId", "originalPostId", 'second-campaign', type FROM processing_job WHERE id = $1`, [legacyJob.id], "23505");
     await db.processingJob.updateMany({ where: { type: "TELEGRAM_PREPARE", originalPostId: { not: legacyPost.id }, status: { in: ["PENDING", "PROCESSING"] } }, data: { availableAt: new Date(Date.now() + 86400000), lockedUntil: new Date(Date.now() + 86400000) } });
+    await catchUpDefaultCampaigns(db);
     process.env.INGEST_WORKSPACE_ID = workspaceId;
     await admin.query(`UPDATE campaign_source SET "telegramAutomationEnabled" = false WHERE "sourceChannelId" = 'campaign-source-on'`);
     assert(await processTelegramJob(db, async () => "Current runtime still prepares one synthetic draft."));
     const prepared = await db.aiDraft.findFirstOrThrow({ where: { originalPostId: legacyPost.id } });
-    assert.equal((await admin.query(`SELECT "campaignId" FROM ai_draft WHERE id = $1`, [prepared.id])).rows[0].campaignId, null);
+    assert.equal((await admin.query(`SELECT "campaignId" FROM ai_draft WHERE id = $1`, [prepared.id])).rows[0].campaignId, defaultId);
     await db.aiDraft.update({ where: { id: prepared.id }, data: { reviewStatus: "APPROVED" } });
     // Retained historical sending/unknown rows correctly prevent new dispatch.
     const queuedId = await queuePublication(db, workspaceId, prepared.id, prepared.editRevision);
@@ -175,8 +177,8 @@ async function main() {
     await db.workspace.create({ data: { id: "post-migration-workspace", name: "Legacy writer", ownerId: "post-migration-user" } });
     await db.sourceChannel.create({ data: { workspaceId: "post-migration-workspace", username: "post_migration_source" } });
     assert.equal((await admin.query(`SELECT count(*)::int AS count FROM campaign WHERE "workspaceId" = 'post-migration-workspace'`)).rows[0].count, 0);
-    console.log("PASS: unchanged runtime writers/AI preparation/publishing/receipt recording work with nullable references; old draft/job uniqueness remains; new workspace/source creation needs no campaign yet.");
-    const mainAfter = (await admin.query(`SELECT to_regclass('public.campaign')::text AS campaign,
+    console.log("PASS: nullable legacy writes remain supported; catch-up enables Default-only preparation/publishing with unchanged receipts and uniqueness.");
+    const mainAfter = (await admin.query(`SELECT to_regclass('public.campaign')::oid AS campaign,
       (SELECT jsonb_agg(migration_name ORDER BY migration_name) FROM public._prisma_migrations) AS migrations`)).rows;
     assert.deepEqual(mainAfter, mainBefore);
     console.log("PASS: main schema campaign table/migration history unchanged; no Telegram calls or live receipt files accessed.");

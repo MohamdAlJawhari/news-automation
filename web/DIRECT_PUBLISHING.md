@@ -1,5 +1,7 @@
 # Direct Telegram publishing
 
+Default-campaign runtime assignment and stopped-worker catch-up are documented in [DEFAULT_CAMPAIGN_RUNTIME.md](./DEFAULT_CAMPAIGN_RUNTIME.md). Workspace settings and source automation remain authoritative; only Default campaign drafts/jobs execute in this stage.
+
 Manual publishing lives at `/workspace/ai-drafts`; destination settings live at `/workspace/publishing`. It uses the existing connected owner workspace (`INGEST_WORKSPACE_ID`) and the existing teleproto user session owned by `telegram-reader/reader.cjs`. Zulfyh owns the intended test destination, `@news_output_test`. No bot, n8n, automatic publishing, or additional Telegram login is involved. Legacy `/review` and its SQLite publishing controls remain separate. RSS preparation and feeds remain independent.
 
 ## Setup and migrations

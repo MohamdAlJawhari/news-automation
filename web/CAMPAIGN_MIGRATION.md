@@ -1,6 +1,8 @@
 # Campaign foundation — migration for review
 
-`prisma/migrations/20261006150000_campaign_foundation/migration.sql` is the first additive campaign migration. It has **not been applied to the main development database**. No previously applied migration, application query, worker, server action, UI, Telegram connection, or receipt file was changed. No multiple-campaign execution is enabled by this stage.
+**Current status:** the foundation migration is applied. Default-campaign runtime compatibility is implemented; see [DEFAULT_CAMPAIGN_RUNTIME.md](./DEFAULT_CAMPAIGN_RUNTIME.md) for current writers, catch-up and rollout commands. The review and deployment notes below describe the original foundation-only stage.
+
+`prisma/migrations/20261006150000_campaign_foundation/migration.sql` is the first additive campaign migration. Its original implementation changed only the database foundation. It did not change previously applied migrations, application queries, workers, server actions, UI, Telegram connections or receipt files, or enable multiple-campaign execution.
 
 ## Added models and relationships
 

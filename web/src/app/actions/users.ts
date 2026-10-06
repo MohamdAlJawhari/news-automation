@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 import { requireAdmin } from "@/lib/admin";
 import { prisma } from "@/lib/prisma";
+import { ensureDefaultCampaign } from "@/lib/default-campaign";
 
 function finish(message: string): never {
   revalidatePath("/users");
@@ -82,7 +83,7 @@ export async function updateUserAccess(formData: FormData) {
       }
 
       if (status === "APPROVED") {
-        await tx.workspace.upsert({
+        const workspace = await tx.workspace.upsert({
           where: { ownerId: userId },
           create: {
             ownerId: userId,
@@ -95,6 +96,7 @@ export async function updateUserAccess(formData: FormData) {
             automationEnabled,
           },
         });
+        await ensureDefaultCampaign(tx, workspace.id);
       } else {
         await tx.workspace.updateMany({
           where: { ownerId: userId },

@@ -13,7 +13,9 @@
     "worker:telegram:once": "tsx scripts/telegram-worker.ts --once",
     "check:telegram": "tsx scripts/check-telegram-preparation.ts",
     "check:publishing": "tsx scripts/check-direct-publishing.ts",
-    "check:campaign-migration": "tsx scripts/check-campaign-migration.ts"
+    "check:campaign-migration": "tsx scripts/check-campaign-migration.ts",
+    "campaigns:catch-up": "tsx scripts/default-campaign-catchup.ts",
+    "check:campaign-runtime": "tsx scripts/check-default-campaign-runtime.ts"
   },
   "dependencies": {
     "@next/env": "16.3.8",
