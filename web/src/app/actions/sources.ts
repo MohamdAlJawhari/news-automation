@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { lockPublishing } from "@/lib/publishing-db";
 import { syncDefaultMembership } from "@/lib/default-campaign";
+import { destinationConflict, setCampaignMembership } from "@/lib/campaign-execution";
 import { hasAiAccess } from "@/lib/ai-db";
 import {
     requireSourceManagementAccess,
@@ -54,8 +55,8 @@ export async function addWorkspaceSource(formData: FormData) {
 
     try {
         const result = await prisma.$transaction(async tx => {
-          const { settings } = await lockPublishing(tx, workspace.id);
-          if (settings?.destinationUsername === username) return { count: -1 };
+          await lockPublishing(tx, workspace.id);
+          if (await destinationConflict(tx, workspace.id, username)) return { count: -1 };
           const result = await tx.sourceChannel.createMany({
             data: [
                 {
@@ -90,11 +91,12 @@ export async function setSourceTelegramAutomation(formData: FormData) {
     const count = await prisma.$transaction(async tx => {
         const { workspace: access } = await lockPublishing(tx, workspace.id);
         if (!hasAiAccess(access)) return 0;
-        const result = await tx.sourceChannel.updateMany({ where: { id, workspaceId: workspace.id }, data: { telegramAutomationEnabled: enabled } });
-        if (result.count) await syncDefaultMembership(tx, workspace.id, id);
-        return result.count;
+        const source = await tx.sourceChannel.findFirst({ where: { id, workspaceId: workspace.id } });
+        if (!source) return 0;
+        await setCampaignMembership(tx, workspace.id, access!.defaultCampaign.id, id, enabled);
+        return 1;
     });
-    finish(count ? "Telegram automation saved. Collected posts, existing drafts and RSS are preserved. A send already in flight cannot be recalled." : "Source or automation access is unavailable.");
+    finish(count ? "Default campaign Telegram automation saved. Collected posts, existing drafts and RSS are preserved. A send already in flight cannot be recalled." : "Source or automation access is unavailable.");
 }
 
 export async function setWorkspaceSourceEnabled(

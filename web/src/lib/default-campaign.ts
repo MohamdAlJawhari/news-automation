@@ -10,18 +10,11 @@ export async function ensureDefaultCampaign(tx: Prisma.TransactionClient, worksp
 }
 
 export async function syncDefaultMembership(tx: Prisma.TransactionClient, workspaceId: string, sourceId: string) {
-  // Serialize synchronization with source toggle changes; never trust a caller's flag.
-  const sources = await tx.$queryRaw<{ telegramAutomationEnabled: boolean }[]>`
-    SELECT "telegramAutomationEnabled" FROM source_channel
-    WHERE id = ${sourceId} AND "workspaceId" = ${workspaceId} FOR UPDATE`;
-  if (!sources[0]) throw new Error("Source is unavailable in this workspace.");
+  await tx.sourceChannel.findUniqueOrThrow({ where: { id_workspaceId: { id: sourceId, workspaceId } } });
   const campaign = await ensureDefaultCampaign(tx, workspaceId);
-  await tx.$executeRaw`INSERT INTO campaign_source
-    ("campaignId", "sourceChannelId", "workspaceId", "telegramAutomationEnabled")
-    VALUES (${campaign.id}, ${sourceId}, ${workspaceId}, ${sources[0].telegramAutomationEnabled})
-    ON CONFLICT ("campaignId", "sourceChannelId") DO UPDATE
-      SET "telegramAutomationEnabled" = EXCLUDED."telegramAutomationEnabled", "updatedAt" = clock_timestamp()
-      WHERE campaign_source."telegramAutomationEnabled" IS DISTINCT FROM EXCLUDED."telegramAutomationEnabled"`;
+  // Compatibility name: ensure an off-by-default membership only. Never copy
+  // the retired source flag or overwrite an existing campaign choice.
+  await tx.campaignSource.createMany({ data: [{ campaignId: campaign.id, sourceChannelId: sourceId, workspaceId }], skipDuplicates: true });
   return campaign;
 }
 

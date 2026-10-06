@@ -1,8 +1,9 @@
 "use server";
+import { ensureDefaultCampaign } from "@/lib/default-campaign";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requireWorkspaceAccess } from "@/lib/workspace-access";
-import { lockPublishing, queuePublication } from "@/lib/publishing-db";
+import { lockPublishing, queuePublication, requestPublicationRecovery } from "@/lib/publishing-db";
 import { hasAiAccess } from "@/lib/ai-db";
 import { connectedWorkspace } from "@/lib/ai-config";
 import { destinationUsername, PublishingError } from "@/lib/publishing-config";
@@ -41,7 +42,8 @@ export async function publishAiDraft(_: PublishingState, form: FormData): Promis
   const id = form.get("id"); const revision = Number(form.get("revision"));
   if (typeof id !== "string" || id.length > 100 || !Number.isSafeInteger(revision) || revision < 1) return { success: false, message: "Invalid draft. Reload first." };
   try {
-    await queuePublication(prisma, workspace.id, id, revision); refresh();
+    const campaign = await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspace.id));
+    await queuePublication(prisma, workspace.id, id, revision, campaign.id); refresh();
     return { success: true, message: "Queued the exact saved, approved text and verified destination." };
   } catch (e) { return { success: false, message: e instanceof PublishingError ? e.message : "Could not queue publication. Reload to check its state." }; }
 }
@@ -49,18 +51,8 @@ export async function recoverTelegramPublication(_: PublishingState, form: FormD
   const { workspace } = await requireWorkspaceAccess("automation");
   try {
     await prisma.$transaction(async tx => {
-      const access = await lockPublishing(tx, workspace.id);
-      if (!hasAiAccess(access.workspace)) throw new PublishingError("Access is unavailable.");
-      const p = await tx.telegramPublication.findFirst({ where: { id: String(form.get("id")), workspaceId: workspace.id, status: "DELIVERY_UNKNOWN" } });
-      if (!p) throw new PublishingError("This publication no longer needs recovery. Reload.");
-      if (form.get("intent") === "existing") {
-        const messageId = Number(form.get("messageId"));
-        if (!Number.isInteger(messageId) || messageId < 1 || messageId > 2147483647) throw new PublishingError("Enter the existing message's numeric ID.");
-        await tx.telegramPublication.update({ where: { id: p.id }, data: { recoveryMessageId: messageId, recoveryNote: "Owner requested verification of an existing message." } });
-      } else if (form.get("intent") === "none" && form.get("confirmed") === "on") {
-        if (!p.dispatchedAt || Date.now() - p.dispatchedAt.getTime() < 600000) throw new PublishingError("Wait at least ten minutes after dispatch, stop the reader, then inspect Telegram before confirming nothing was sent.");
-        await tx.telegramPublication.update({ where: { id: p.id }, data: { status: "FAILED", lockedUntil: null, lockToken: null, recoveryMessageId: null, recoveryNote: "Owner confirmed reader stopped and no message sent.", lastError: "Confirmed not sent. Publish can retry this snapshot with the same Telegram random ID." } });
-      } else throw new PublishingError("Confirm that the reader is stopped and Telegram contains no matching message.");
+      const campaign = await ensureDefaultCampaign(tx, workspace.id);
+      await requestPublicationRecovery(tx, workspace.id, campaign.id, String(form.get("id")), String(form.get("intent")), Number(form.get("messageId")), form.get("confirmed") === "on");
     });
     refresh(); return { success: true, message: "Recovery saved. Existing messages are verified by the connected service before recording publication." };
   } catch (e) { return { success: false, message: e instanceof PublishingError ? e.message : "Could not save recovery." }; }

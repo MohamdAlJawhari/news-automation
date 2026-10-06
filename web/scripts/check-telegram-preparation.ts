@@ -66,6 +66,11 @@ async function main() {
     await prisma.user.create({ data: { id: userId, name: "AI fixture", email: "ai-fixture@example.invalid", emailVerified: true, approvalStatus: "APPROVED" } });
     await prisma.workspace.create({ data: { id: workspaceId, ownerId: userId, name: "AI fixture", automationEnabled: true, rssEnabled: true } });
     await prisma.sourceChannel.create({ data: { id: "ai-fixture-source", workspaceId, username: "ai_fixture", telegramAutomationEnabled: true } });
+    const fixtureCampaign = await prisma.campaign.create({ data: { workspaceId, name: "Default", isDefault: true, executionStartsAt: new Date(0) } });
+    await prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT set_config('app.campaign_membership_writer', 'campaign-execution', true)`;
+      await tx.campaignSource.create({ data: { workspaceId, campaignId: fixtureCampaign.id, sourceChannelId: "ai-fixture-source", eligibleAfter: new Date(0), telegramAutomationEnabled: true } });
+    });
     const initial = await prisma.campaignAiSettings.create({ data: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId, systemPrompt: BASE_AI_PROMPT } });
     assert.equal(initial.enabled, false); assert.equal(initial.activatedAt, null);
     await prisma.campaignAiSettings.update({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } }, data: { enabled: true, activatedAt: activation } });
@@ -74,7 +79,7 @@ async function main() {
     assert.equal((await prisma.processingJob.findUniqueOrThrow({ where: { id: older.id } })).attempts, 0);
     const fresh = await post();
     await processTelegramJob(prisma, async () => "According to the council, the library reopened Monday.");
-    let draft = await prisma.aiDraft.findUniqueOrThrow({ where: { originalPostId_workspaceId: { originalPostId: fresh.originalPostId, workspaceId } } });
+    let draft = await prisma.aiDraft.findUniqueOrThrow({ where: { originalPostId_campaignId: { originalPostId: fresh.originalPostId, campaignId: fresh.campaignId! } } });
     assert.equal(draft.campaignId, fresh.campaignId);
     assert.equal(draft.reviewStatus, "PENDING_REVIEW"); assert.equal(draft.settingsRevision, 1);
     await prisma.aiDraft.update({ where: { id: draft.id }, data: { finalText: "Manual review text", editRevision: { increment: 1 } } });

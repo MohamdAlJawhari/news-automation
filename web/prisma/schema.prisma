@@ -177,7 +177,7 @@ model OriginalPost {
   publishedAt DateTime
   receivedAt  DateTime @default(now())
 
-  aiDraft AiDraft?
+  aiDrafts AiDraft[]
   rssItem RssItem?
 
   jobs ProcessingJob[]
@@ -195,7 +195,7 @@ model ProcessingJob {
   originalPostId String
 
   originalPost OriginalPost @relation(fields: [originalPostId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
-  // Nullable during the campaign rollout. RSS jobs always leave this null.
+  // SQL requires campaign identity for Telegram; RSS must leave it null.
   campaignId String?
   campaign Campaign? @relation(fields: [campaignId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
 
@@ -215,7 +215,9 @@ model ProcessingJob {
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 
-  @@unique([originalPostId, type])
+  // The nullable campaign column plus SQL type-dependent check and partial RSS
+  // index enforce one Telegram job per campaign and one independent RSS job.
+  @@unique([originalPostId, type, campaignId])
   @@index([status, availableAt])
   @@index([status, lockedUntil])
   @@index([workspaceId, status])
@@ -309,10 +311,10 @@ model AiDraft {
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
   originalPostId String
   originalPost OriginalPost @relation(fields: [originalPostId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
-  // Current writers may omit this until the runtime rollout. Assigned identity
-  // is immutable in SQL, so publications can derive campaign through the draft.
-  campaignId String?
-  campaign Campaign? @relation(fields: [campaignId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
+  // Required identity is immutable in SQL. Publications derive campaign
+  // through this draft without rewriting historical snapshots.
+  campaignId String
+  campaign Campaign @relation(fields: [campaignId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
   aiText String
   finalText String
   reviewStatus AiReviewStatus @default(PENDING_REVIEW)
@@ -324,7 +326,7 @@ model AiDraft {
   updatedAt DateTime @default(now()) @updatedAt
   publications TelegramPublication[]
   @@unique([id, workspaceId])
-  @@unique([originalPostId, workspaceId])
+  @@unique([originalPostId, campaignId])
   @@index([workspaceId, createdAt])
   @@index([campaignId, workspaceId])
   @@map("ai_draft")
@@ -335,6 +337,7 @@ model Campaign {
   workspaceId String
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
   name String
+  executionStartsAt DateTime @default(dbgenerated("timezone('UTC'::text, clock_timestamp())"))
   // SQL enforces at most one default per workspace with a partial unique index.
   isDefault Boolean @default(false)
   createdAt DateTime @default(now())
@@ -357,6 +360,8 @@ model CampaignSource {
   campaign Campaign @relation(fields: [campaignId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
   sourceChannel SourceChannel @relation(fields: [sourceChannelId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
   telegramAutomationEnabled Boolean @default(false)
+  eligibleAfter DateTime @default(dbgenerated("timezone('UTC'::text, clock_timestamp())"))
+  revision Int @default(1)
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
   @@id([campaignId, sourceChannelId])

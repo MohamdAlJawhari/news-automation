@@ -19,4 +19,4 @@ async function main() {
     console.log(JSON.stringify(result, null, 2)); // Counts only; no credentials or post text.
   } finally { await prisma.$disconnect(); }
 }
-main().catch(() => { console.error("Default campaign catch-up failed. Check command flags, stopped workers, database connectivity and campaign lineage."); process.exitCode = 1; });
+main().catch(() => { console.error("Default catch-up failed. --apply is retired after execution cutover; use campaigns:audit-execution. Before cutover, check stopped services and lineage."); process.exitCode = 1; });

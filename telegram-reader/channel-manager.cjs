@@ -2,6 +2,7 @@ function createChannelManager(client, config, isStopped) {
     let active = new Map();
     let enabledSourceIds = new Set();
     let lastConfigAt = 0;
+    let destinationIds = new Set();
     let lastSummary = "";
 
     const resolved = new Map();
@@ -26,6 +27,11 @@ function createChannelManager(client, config, isStopped) {
             }
 
             const data = await response.json();
+            const ids = data.destinationChatIds || [data.destinationChatId].filter(Boolean);
+            if (!Array.isArray(ids) || ids.some(id => typeof id !== "string" || !/^-100[1-9]\d{0,15}$/.test(id))) {
+                throw new Error("Invalid destination-list response.");
+            }
+            destinationIds = new Set(ids);
 
             if (
                 !Array.isArray(data.channels) ||
@@ -99,7 +105,7 @@ function createChannelManager(client, config, isStopped) {
 
                     if (
                         cached.id === config.outputId ||
-                        cached.id === data.destinationChatId ||
+                        destinationIds.has(cached.id) ||
                         cached.id === config.intakeId
                     ) {
                         throw new Error(
@@ -171,7 +177,7 @@ function createChannelManager(client, config, isStopped) {
 
         if (
             !source ||
-            !enabledSourceIds.has(source.sourceId) ||
+            !enabledSourceIds.has(source.sourceId) || destinationIds.has(chatId) ||
             Date.now() - lastConfigAt > 45000
         ) {
             return undefined;

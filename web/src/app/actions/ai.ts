@@ -58,9 +58,10 @@ export async function saveAiDraft(previous: AiActionState, form: FormData): Prom
   }
   try {
     const count = await prisma.$transaction(async (tx) => {
-      if (!hasAiAccess(await lockAiAccess(tx, workspace.id))) return 0;
+      const access = await lockAiAccess(tx, workspace.id);
+      if (!hasAiAccess(access)) return 0;
       const result = await tx.aiDraft.updateMany({
-        where: { id, workspaceId: workspace.id, editRevision: revision,
+        where: { id, workspaceId: workspace.id, campaignId: access!.defaultCampaign.id, editRevision: revision,
           publications: { none: { status: { in: [...BLOCKING_PUBLICATIONS] } } } },
         data: { ...(intent === "save" ? { finalText: (finalText as string).trim() } : {}), editRevision: { increment: 1 },
           reviewStatus: intent === "approve" ? "APPROVED" : intent === "reject" ? "REJECTED" : "PENDING_REVIEW" },

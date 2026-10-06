@@ -1,18 +1,24 @@
 import type { Prisma, PrismaClient } from "../generated/prisma/client";
-import { ensureDefaultCampaign } from "./default-campaign";
+import { randomUUID } from "node:crypto";
+
+export async function executionCutoverApplied(tx: Prisma.TransactionClient) {
+  const [row] = await tx.$queryRaw<{ applied: boolean }[]>`SELECT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'campaign_source'::regclass AND attname = 'eligibleAfter' AND NOT attisdropped) AS applied`;
+  return row.applied;
+}
 
 export async function inspectDefaultCampaignGaps(tx: Prisma.TransactionClient) {
+  const applied = await executionCutoverApplied(tx);
   const [counts] = await tx.$queryRaw<{
     defaultsMissing: number; membershipsMissing: number; membershipFlagsDifferent: number;
     draftsUnassigned: number; telegramJobsUnassigned: number; lineageConflicts: number;
   }[]>`SELECT
     (SELECT count(*)::int FROM workspace w WHERE NOT EXISTS (SELECT 1 FROM campaign c WHERE c."workspaceId" = w.id AND c."isDefault")) AS "defaultsMissing",
     (SELECT count(*)::int FROM source_channel s WHERE NOT EXISTS (SELECT 1 FROM campaign_source m JOIN campaign c ON c.id = m."campaignId" AND c."workspaceId" = m."workspaceId" WHERE c."isDefault" AND m."sourceChannelId" = s.id AND m."workspaceId" = s."workspaceId")) AS "membershipsMissing",
-    (SELECT count(*)::int FROM campaign_source m JOIN campaign c ON c.id = m."campaignId" AND c."workspaceId" = m."workspaceId" JOIN source_channel s ON s.id = m."sourceChannelId" AND s."workspaceId" = m."workspaceId" WHERE c."isDefault" AND m."telegramAutomationEnabled" IS DISTINCT FROM s."telegramAutomationEnabled") AS "membershipFlagsDifferent",
+    (SELECT count(*)::int FROM campaign_source m JOIN campaign c ON c.id = m."campaignId" AND c."workspaceId" = m."workspaceId" JOIN source_channel s ON s.id = m."sourceChannelId" AND s."workspaceId" = m."workspaceId" WHERE NOT ${applied} AND c."isDefault" AND m."telegramAutomationEnabled" IS DISTINCT FROM s."telegramAutomationEnabled") AS "membershipFlagsDifferent",
     (SELECT count(*)::int FROM ai_draft WHERE "campaignId" IS NULL) AS "draftsUnassigned",
     (SELECT count(*)::int FROM processing_job WHERE type = 'TELEGRAM_PREPARE' AND "campaignId" IS NULL) AS "telegramJobsUnassigned",
     (SELECT count(*)::int FROM processing_job j JOIN ai_draft d ON d."originalPostId" = j."originalPostId" AND d."workspaceId" = j."workspaceId"
-      WHERE j.type = 'TELEGRAM_PREPARE' AND j."campaignId" IS NOT NULL AND d."campaignId" IS NOT NULL AND j."campaignId" <> d."campaignId") AS "lineageConflicts"`;
+      WHERE NOT ${applied} AND j.type = 'TELEGRAM_PREPARE' AND j."campaignId" IS NOT NULL AND d."campaignId" IS NOT NULL AND j."campaignId" <> d."campaignId") AS "lineageConflicts"`;
   return counts;
 }
 
@@ -22,9 +28,10 @@ export async function catchUpDefaultCampaigns(prisma: PrismaClient) {
   return prisma.$transaction(async tx => {
     await tx.$executeRaw`SET LOCAL lock_timeout = '10s'`;
     await tx.$executeRaw`LOCK TABLE workspace, source_channel, campaign, campaign_source, original_post, ai_draft, processing_job IN SHARE ROW EXCLUSIVE MODE`;
+    if (await executionCutoverApplied(tx)) throw new Error("Legacy catch-up is retired after campaign execution cutover; use the read-only execution audit.");
     const before = await inspectDefaultCampaignGaps(tx);
     for (const workspace of await tx.workspace.findMany({ select: { id: true }, orderBy: { id: "asc" } })) {
-      await ensureDefaultCampaign(tx, workspace.id);
+      await tx.$executeRaw`INSERT INTO campaign (id, "workspaceId", name, "isDefault", "updatedAt") VALUES (${randomUUID()}, ${workspace.id}, 'Default', true, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING`;
     }
     const membershipsCreated = await tx.$executeRaw`INSERT INTO campaign_source
       ("campaignId", "sourceChannelId", "workspaceId", "telegramAutomationEnabled", "createdAt", "updatedAt")

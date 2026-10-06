@@ -1,3 +1,4 @@
+import { ensureDefaultCampaign } from "@/lib/default-campaign";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { requireSourceManagementAccess } from "@/lib/workspace-access";
@@ -17,6 +18,7 @@ export default async function WorkspaceSourcesPage({
   searchParams: Promise<{ message?: string | string[]; q?: string | string[] }>;
 }) {
   const { user, workspace } = await requireSourceManagementAccess();
+  const campaign = await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspace.id));
   const params = await searchParams;
   const message = typeof params.message === "string" ? params.message : "";
   const q = typeof params.q === "string" ? params.q.slice(0, 200).trim() : "";
@@ -42,7 +44,7 @@ export default async function WorkspaceSourcesPage({
       username: true,
       title: true,
       enabled: true,
-      telegramAutomationEnabled: true,
+      campaignSources: { where: { campaignId: campaign.id, workspaceId: workspace.id }, select: { telegramAutomationEnabled: true } },
       telegramChatId: true,
       rssFeed: { select: { enabled: true, tokenHash: true } },
       originalPosts: {
@@ -177,10 +179,10 @@ export default async function WorkspaceSourcesPage({
                 <footer className="border-t border-slate-100 pt-4 space-y-3">
                   <form action={setSourceTelegramAutomation} className="space-y-2">
                     <input type="hidden" name="sourceId" value={source.id} />
-                    <input type="hidden" name="enabled" value={String(!source.telegramAutomationEnabled)} />
-                    <p className="text-sm">Telegram automation: {source.telegramAutomationEnabled ? "On" : "Off"}</p>
-                    <p className="muted text-sm">Allows new AI preparation and queued Telegram publications from this source. Off preserves originals, drafts and independent RSS processing.</p>
-                    <SubmitButton className="button" disabled={!workspace.automationEnabled}>{source.telegramAutomationEnabled ? "Turn off Telegram automation" : "Turn on Telegram automation"}</SubmitButton>
+                    <input type="hidden" name="enabled" value={String(!source.campaignSources[0]?.telegramAutomationEnabled)} />
+                    <p className="text-sm">Default campaign Telegram automation: {source.campaignSources[0]?.telegramAutomationEnabled ? "On" : "Off"}</p>
+                    <p className="muted text-sm">Controls AI preparation and manual publishing for Default only. Off holds eligible queued work; resume keeps its original boundary. Originals, drafts, RSS and other campaign choices are preserved.</p>
+                    <SubmitButton className="button" disabled={!workspace.automationEnabled}>{source.campaignSources[0]?.telegramAutomationEnabled ? "Turn off Default automation" : "Turn on Default automation"}</SubmitButton>
                   </form>
                   <p className="muted text-sm">
                     RSS feed:{" "}

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "../src/generated/prisma/client";
 import { connectedWorkspace, effectivePrompt, LEASE_MS, MAX_ATTEMPTS, PreparationError } from "../src/lib/ai-config";
 import { hasAiAccess, lockAiAccess } from "../src/lib/ai-db";
-import { isDefaultCampaign } from "../src/lib/default-campaign";
+import { membershipFor, withinBoundary } from "../src/lib/campaign-execution";
 import { rewriteWithOllama } from "../src/lib/ollama";
 
 type Claim = { id: string; workspaceId: string; originalPostId: string; campaignId: string; lockToken: string; attempts: number };
@@ -35,7 +35,7 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
     "updatedAt" = clock_timestamp(), "lastError" = 'Generation attempts exhausted (including expired claims).'
     FROM original_post o, campaign_ai_settings s, campaign c
     WHERE j."workspaceId" = ${workspaceId} AND s."workspaceId" = j."workspaceId" AND s."campaignId" = j."campaignId"
-      AND c.id = j."campaignId" AND c."workspaceId" = j."workspaceId" AND c."isDefault"
+      AND c.id = j."campaignId" AND c."workspaceId" = j."workspaceId"
       AND o.id = j."originalPostId" AND o."workspaceId" = j."workspaceId"
       AND o."receivedAt" > s."activatedAt" AND j.type = 'TELEGRAM_PREPARE'
       AND j.attempts >= ${MAX_ATTEMPTS}
@@ -45,14 +45,16 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
   const rows = await prisma.$queryRaw<Claim[]>`WITH candidate AS (
     SELECT j.id FROM processing_job j
     JOIN original_post o ON o.id = j."originalPostId" AND o."workspaceId" = j."workspaceId"
-    JOIN campaign campaign ON campaign.id = j."campaignId" AND campaign."workspaceId" = j."workspaceId" AND campaign."isDefault"
+    JOIN campaign campaign ON campaign.id = j."campaignId" AND campaign."workspaceId" = j."workspaceId"
     JOIN workspace w ON w.id = j."workspaceId"
     JOIN "user" u ON u.id = w."ownerId"
     JOIN campaign_ai_settings s ON s."workspaceId" = w.id AND s."campaignId" = j."campaignId"
+    JOIN campaign_source membership ON membership."campaignId" = j."campaignId" AND membership."workspaceId" = w.id AND membership."sourceChannelId" = o."sourceChannelId"
     JOIN source_channel source ON source.id = o."sourceChannelId" AND source."workspaceId" = w.id
     WHERE w.id = ${workspaceId} AND w."automationEnabled" AND u."emailVerified"
       AND u."approvalStatus" = 'APPROVED' AND s.enabled AND o."receivedAt" > s."activatedAt"
-      AND source.enabled AND source."telegramAutomationEnabled"
+      AND source.enabled AND membership."telegramAutomationEnabled"
+      AND o."receivedAt" > membership."eligibleAfter" AND o."receivedAt" > campaign."executionStartsAt"
       AND j.type = 'TELEGRAM_PREPARE' AND j.attempts < ${MAX_ATTEMPTS}
       AND ((j.status = 'PENDING' AND j."availableAt" <= clock_timestamp())
         OR (j.status = 'PROCESSING' AND (j."lockedUntil" IS NULL OR j."lockedUntil" <= clock_timestamp())))
@@ -65,23 +67,24 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
   if (!claim) return false;
   let attempted = false;
   let generationRevision: number | undefined;
+  let generationMembershipRevision: number | undefined;
   try {
     const prepared = await prisma.$transaction(async (tx) => {
-      const workspace = await lockAiAccess(tx, claim.workspaceId);
+      const workspace = await lockAiAccess(tx, claim.workspaceId, claim.campaignId);
       if (!await ownsClaim(tx, claim)) return null;
-      if (!await isDefaultCampaign(tx, claim.workspaceId, claim.campaignId)) throw new PreparationError("Job campaign is not the workspace Default.", false);
       const settings = workspace?.aiSettings;
       const original = await tx.originalPost.findUniqueOrThrow({
         where: { id_workspaceId: { id: claim.originalPostId, workspaceId: claim.workspaceId } },
         include: { sourceChannel: true },
       });
+      const membership = await membershipFor(tx, claim.workspaceId, claim.campaignId, original.sourceChannelId);
       if (!connectedWorkspace(claim.workspaceId) || !hasAiAccess(workspace) || !settings?.enabled ||
-          !settings.activatedAt || original.receivedAt <= settings.activatedAt || !original.sourceChannel.enabled || !original.sourceChannel.telegramAutomationEnabled) {
+          !withinBoundary(original.receivedAt, workspace!.campaign, membership, settings) || !original.sourceChannel.enabled || !membership?.telegramAutomationEnabled) {
         await pause(tx, claim, "Waiting for enabled AI settings and approved automation access.", false);
         return null;
       }
       const existing = await tx.aiDraft.findUnique({ where: {
-        originalPostId_workspaceId: { originalPostId: claim.originalPostId, workspaceId: claim.workspaceId },
+        originalPostId_campaignId: { originalPostId: claim.originalPostId, campaignId: claim.campaignId },
       } });
       if (existing) {
         if (existing.campaignId !== claim.campaignId) throw new PreparationError("Existing draft campaign differs from claimed job; run stopped-worker catch-up or investigate lineage.", false);
@@ -92,29 +95,31 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
         return null;
       }
       await tx.processingJob.update({ where: { id: claim.id }, data: { attempts: { increment: 1 } } });
-      return { revision: settings.revision, model: settings.model,
+      return { revision: settings.revision, membershipRevision: membership!.revision, model: settings.model,
         prompt: effectivePrompt(settings), originalText: original.originalText };
     }, { timeout: 10000 });
     if (!prepared) return true;
     attempted = true;
     generationRevision = prepared.revision;
+    generationMembershipRevision = prepared.membershipRevision;
     const text = await generate(prepared.model, prepared.prompt, prepared.originalText);
     const outcome = await prisma.$transaction(async (tx) => {
-      const workspace = await lockAiAccess(tx, claim.workspaceId);
+      const workspace = await lockAiAccess(tx, claim.workspaceId, claim.campaignId);
       if (!await ownsClaim(tx, claim)) return "Claim expired or superseded; result discarded.";
       const source = await tx.originalPost.findUniqueOrThrow({ where: { id_workspaceId: { id: claim.originalPostId, workspaceId: claim.workspaceId } }, include: { sourceChannel: true } });
+      const membership = await membershipFor(tx, claim.workspaceId, claim.campaignId, source.sourceChannelId);
       if (!connectedWorkspace(claim.workspaceId) || !hasAiAccess(workspace) || !workspace?.aiSettings?.enabled ||
-          workspace.aiSettings.revision !== prepared.revision || !source.sourceChannel.enabled || !source.sourceChannel.telegramAutomationEnabled) {
+          workspace.aiSettings.revision !== prepared.revision || membership?.revision !== prepared.membershipRevision || !source.sourceChannel.enabled || !membership?.telegramAutomationEnabled ||
+          !withinBoundary(source.receivedAt, workspace!.campaign, membership, workspace?.aiSettings)) {
         await pause(tx, claim, "Access or AI settings changed; stale result discarded.", true);
         return "Access or settings changed; result discarded.";
       }
-      if (!await isDefaultCampaign(tx, claim.workspaceId, claim.campaignId)) throw new PreparationError("Job campaign is not the workspace Default.", false);
-      const existing = await tx.aiDraft.findUnique({ where: { originalPostId_workspaceId: { originalPostId: claim.originalPostId, workspaceId: claim.workspaceId } } });
+      const existing = await tx.aiDraft.findUnique({ where: { originalPostId_campaignId: { originalPostId: claim.originalPostId, campaignId: claim.campaignId } } });
       if (existing && existing.campaignId !== claim.campaignId) throw new PreparationError("Existing draft campaign differs from claimed job.", false);
       // Hold the claim row until commit; unique constraint and no-op update preserve edits.
       if (text !== null) {
         const draft = await tx.aiDraft.upsert({
-          where: { originalPostId_workspaceId: { originalPostId: claim.originalPostId, workspaceId: claim.workspaceId } },
+          where: { originalPostId_campaignId: { originalPostId: claim.originalPostId, campaignId: claim.campaignId } },
           create: { workspaceId: claim.workspaceId, originalPostId: claim.originalPostId, campaignId: claim.campaignId,
             aiText: text, finalText: text, model: prepared.model,
             effectivePrompt: prepared.prompt, settingsRevision: prepared.revision },
@@ -136,11 +141,14 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
     // Never persist arbitrary exception messages: provider/DB errors may contain input.
     const safe = error instanceof PreparationError ? error.message : "Database processing failed.";
     await prisma.$transaction(async (tx) => {
-      const workspace = await lockAiAccess(tx, claim.workspaceId);
+      const workspace = await lockAiAccess(tx, claim.workspaceId, claim.campaignId);
       if (!await ownsClaim(tx, claim)) return;
       const source = await tx.originalPost.findUniqueOrThrow({ where: { id_workspaceId: { id: claim.originalPostId, workspaceId: claim.workspaceId } }, include: { sourceChannel: true } });
+      const membership = await membershipFor(tx, claim.workspaceId, claim.campaignId, source.sourceChannelId);
       if (!connectedWorkspace(claim.workspaceId) || !hasAiAccess(workspace) || !workspace?.aiSettings?.enabled ||
-          (generationRevision !== undefined && workspace.aiSettings.revision !== generationRevision) || !source.sourceChannel.enabled || !source.sourceChannel.telegramAutomationEnabled) {
+          (generationRevision !== undefined && workspace.aiSettings.revision !== generationRevision) ||
+          (generationMembershipRevision !== undefined && membership?.revision !== generationMembershipRevision) || !source.sourceChannel.enabled || !membership?.telegramAutomationEnabled ||
+          !withinBoundary(source.receivedAt, workspace!.campaign, membership, workspace?.aiSettings)) {
         await pause(tx, claim, "Access or AI settings changed; waiting for current settings.", attempted);
         return;
       }

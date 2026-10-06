@@ -1,3 +1,4 @@
+import { setCampaignMembership } from "../src/lib/campaign-execution";
 import { ensureDefaultCampaign } from "../src/lib/default-campaign";
 // Real PostgreSQL in a disposable schema; session/Next boundaries are mocked.
 // No Telegram connection, credentials or network sends are used by this check.
@@ -73,13 +74,18 @@ async function main() {
     await prisma.user.create({ data: { id: fixture.userId, name: "Publishing fixture", email: "publishing@example.invalid", emailVerified: true, approvalStatus: "APPROVED" } });
     await prisma.workspace.create({ data: { id: workspaceId, ownerId: fixture.userId, name: "Publishing fixture", automationEnabled: true, rssEnabled: true } });
     await prisma.sourceChannel.create({ data: { id: "publishing-source", workspaceId, username: "publishing_source" } });
+    const fixtureCampaign = await prisma.campaign.create({ data: { workspaceId, name: "Default", isDefault: true, executionStartsAt: new Date(0) } });
+    await prisma.$transaction(async tx => {
+      await tx.$executeRaw`SELECT set_config('app.campaign_membership_writer', 'campaign-execution', true)`;
+      await tx.campaignSource.create({ data: { workspaceId, campaignId: fixtureCampaign.id, sourceChannelId: "publishing-source", eligibleAfter: new Date(0), telegramAutomationEnabled: false } });
+    });
     await prisma.campaignAiSettings.create({ data: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId, systemPrompt: "fixture", enabled: true, activatedAt: new Date(0) } });
     const actions = await load<Actions>("src/app/actions/direct-publishing.ts");
     const ai = await load<AiActions>("src/app/actions/ai.ts");
     const sources = await load<Record<string, (form: FormData) => Promise<void>>>("src/app/actions/sources.ts");
     const channelRoutes = await load<Routes>("src/app/api/ingestion/channels/route.ts");
     const routes = await load<Routes>("src/app/api/reader/publishing/route.ts");
-    const api = async (body: Record<string, unknown>, secret = process.env.INGEST_READER_SECRET) => routes.POST(new Request("http://localhost/api/reader/publishing", { method: "POST", headers: { "x-ingest-secret": secret || "", "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+    const api = async (body: Record<string, unknown>, secret = process.env.INGEST_READER_SECRET) => routes.POST(new Request("http://localhost/api/reader/publishing", { method: "POST", headers: { "x-ingest-secret": secret || "", "Content-Type": "application/json" }, body: JSON.stringify(body.action === "verify" ? { campaignId: fixtureCampaign.id, ...body } : body) }));
     const json = async (body: Record<string, unknown>) => (await api(body)).json();
     assert.equal((await api({ action: "claim" }, "wrong")).status, 401);
     const d = await draft();
@@ -98,7 +104,7 @@ async function main() {
     assert.equal((await actions.savePublishingSettings(initial, form({ ...settingsFields, revision: String(settings.revision), destination: "publishing_source" }))).success, false);
     await assert.rejects(sources.addWorkspaceSource(form({ channel: "news_output_test" })), /REDIRECT:.*publishing%20destination/);
     assert.equal(await prisma.sourceChannel.count({ where: { username: "news_output_test" } }), 0);
-    await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: true } });
+    await prisma.$transaction(tx => setCampaignMembership(tx, workspaceId, fixtureCampaign.id, "publishing-source", true));
     const clicks = await Promise.all([actions.publishAiDraft(initial, form({ id: d.id, revision: "1" })), actions.publishAiDraft(initial, form({ id: d.id, revision: "1" }))]);
     assert.equal(clicks.filter(c => c.success).length, 1);
     const snapshot = await prisma.telegramPublication.findFirstOrThrow({ where: { draftId: d.id } });
@@ -115,22 +121,23 @@ async function main() {
       if (kind === "unverified") await prisma.user.update({ where: { id: fixture.userId }, data: { emailVerified: false } });
       if (kind === "automation") await prisma.workspace.update({ where: { id: workspaceId }, data: { automationEnabled: false } });
       if (kind === "publishing") await prisma.campaignPublishingSettings.update({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } }, data: { enabled: false } });
-      if (kind === "source") await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: false } });
+      if (kind === "source") await prisma.$transaction(tx => setCampaignMembership(tx, workspaceId, fixtureCampaign.id, "publishing-source", false));
       if (kind === "monitoring") await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { enabled: false } });
       assert.equal(await claimPublication(prisma, workspaceId), null);
       if (["suspended", "unverified", "automation"].includes(kind)) await assert.rejects(actions.publishAiDraft(initial, form({ id: d.id, revision: "1" })), /REDIRECT:/);
       await prisma.user.update({ where: { id: fixture.userId }, data: { emailVerified: true, approvalStatus: "APPROVED" } });
       await prisma.workspace.update({ where: { id: workspaceId }, data: { automationEnabled: true } });
       await prisma.campaignPublishingSettings.update({ where: { campaignId_workspaceId: { campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id, workspaceId } }, data: { enabled: true } });
-      await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { enabled: true, telegramAutomationEnabled: true } });
+      await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { enabled: true } });
+      await prisma.$transaction(tx => setCampaignMembership(tx, workspaceId, fixtureCampaign.id, "publishing-source", true));
     }
     const claims = await Promise.all([claimPublication(prisma, workspaceId), claimPublication(prisma, workspaceId)]);
     const claimed = claims.find(Boolean)!; assert.equal(claims.filter(Boolean).length, 1);
     const claimFields = { id: claimed.id, token: claimed.lockToken! };
     assert((await json({ action: "authorize", ...claimFields })).authorized);
-    await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: false } });
+    await prisma.$transaction(tx => setCampaignMembership(tx, workspaceId, fixtureCampaign.id, "publishing-source", false));
     assert.equal((await json({ action: "authorize", ...claimFields })).authorized, false);
-    await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: true } });
+    await prisma.$transaction(tx => setCampaignMembership(tx, workspaceId, fixtureCampaign.id, "publishing-source", true));
     await prisma.telegramPublication.update({ where: { id: claimed.id }, data: { lockedUntil: new Date(0) } });
     assert.equal(await claimPublication(prisma, workspaceId), null);
     assert.equal((await prisma.telegramPublication.findUniqueOrThrow({ where: { id: claimed.id } })).status, "DELIVERY_UNKNOWN");
@@ -156,7 +163,7 @@ async function main() {
     const channelResponse = await channelRoutes.GET(new Request("http://localhost/api/ingestion/channels", { headers: { "x-ingest-secret": process.env.INGEST_READER_SECRET! } }));
     assert.equal(channelResponse.status, 200);
     const channelData = await channelResponse.json();
-    assert.equal(channelData.destinationChatId, "-10099999");
+    assert(channelData.destinationChatIds.includes("-10099999"));
     assert(!channelData.channels.some((channel: { id: string }) => channel.id === excludedSource.id));
     await prisma.sourceChannel.delete({ where: { id: excludedSource.id } });
     assert.equal(await claimPublication(prisma, workspaceId), null);
@@ -209,14 +216,14 @@ async function main() {
     // Source off prevents generation; switching it off during generation discards the result.
     const original = (await draft()).originalPostId;
     await prisma.processingJob.create({ data: { workspaceId, originalPostId: original, type: "TELEGRAM_PREPARE", campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id } });
-    await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: false } });
+    await prisma.$transaction(tx => setCampaignMembership(tx, workspaceId, fixtureCampaign.id, "publishing-source", false));
     assert.equal(await processTelegramJob(prisma, async () => { throw new Error("must not generate"); }), false);
     // Use a separate original with no existing draft for the commit-time pause test.
     const fresh = await prisma.originalPost.create({ data: { workspaceId, sourceChannelId: "publishing-source", telegramChatId: "-10055555", telegramMessageId: sequence++, originalText: "Synthetic", publishedAt: new Date() } });
     await prisma.processingJob.create({ data: { workspaceId, originalPostId: fresh.id, type: "TELEGRAM_PREPARE", campaignId: (await prisma.$transaction(tx => ensureDefaultCampaign(tx, workspaceId))).id } });
-    await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: true } });
+    await prisma.$transaction(tx => setCampaignMembership(tx, workspaceId, fixtureCampaign.id, "publishing-source", true));
     await processTelegramJob(prisma, async () => "unused existing draft");
-    await processTelegramJob(prisma, async () => { await prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: false } }); return "must discard"; });
+    await processTelegramJob(prisma, async () => { await prisma.$transaction(tx => setCampaignMembership(tx, workspaceId, fixtureCampaign.id, "publishing-source", false)); return "must discard"; });
     assert.equal(await prisma.aiDraft.count({ where: { originalPostId: fresh.id } }), 0);
     assert.equal((await prisma.processingJob.findFirstOrThrow({ where: { originalPostId: fresh.id } })).attempts, 0);
     console.log("PASS: workspace isolation and source automation pause before generation and draft commit; originals/drafts retained.");

@@ -26,7 +26,7 @@ export async function GET(request: Request) {
             },
             select: {
                 id: true,
-                campaigns: { where: { isDefault: true }, select: { publishingSettings: { select: { destinationChatId: true, destinationUsername: true } } } },
+                campaigns: { select: { publishingSettings: { select: { destinationChatId: true, destinationUsername: true } } } },
                 sourceChannels: {
                     where: { enabled: true },
                     select: {
@@ -46,12 +46,12 @@ export async function GET(request: Request) {
             );
         }
 
-        const settings = workspace.campaigns[0]?.publishingSettings;
+        const destinations = workspace.campaigns.flatMap(c => c.publishingSettings ? [c.publishingSettings] : []);
+        const destinationChatIds = destinations.flatMap(s => s.destinationChatId ? [s.destinationChatId] : []);
         return Response.json(
             {
-                destinationChatId: settings?.destinationChatId ?? null,
-                channels: workspace.sourceChannels.filter(source => source.username !== settings?.destinationUsername &&
-                  (!source.telegramChatId || source.telegramChatId !== settings?.destinationChatId)),
+                destinationChatIds,
+                channels: workspace.sourceChannels.filter(source => !destinations.some(s => source.username === s.destinationUsername || (source.telegramChatId && source.telegramChatId === s.destinationChatId))),
             },
             {
                 headers: {
@@ -59,8 +59,8 @@ export async function GET(request: Request) {
                 },
             }
         );
-    } catch (error) {
-        console.error("Reading ingestion sources failed:", error);
+    } catch {
+        console.error("Reading ingestion sources failed.");
 
         return Response.json(
             { error: "Could not load sources." },

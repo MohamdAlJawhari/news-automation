@@ -130,13 +130,13 @@ async function main() {
     // A stale membership flag must not override the authoritative source toggle.
     await prisma.campaignSource.update({ where: membershipWhere, data: { telegramAutomationEnabled: false } });
     assert(await processTelegramJob(prisma, async () => "Synthetic generated draft"));
-    const draft = await prisma.aiDraft.findUniqueOrThrow({ where: { originalPostId_workspaceId: { originalPostId: telegram.originalPostId, workspaceId: workspace.id } } });
+    const draft = await prisma.aiDraft.findUniqueOrThrow({ where: { originalPostId_campaignId: { originalPostId: telegram.originalPostId, campaignId: telegram.campaignId! } } });
     assert.equal(draft.campaignId, telegram.campaignId);
     await assert.rejects(prisma.aiDraft.update({ where: { id: draft.id }, data: { campaignId: concurrent[0].id } }));
     console.log("PASS: real source actions synchronize membership; ingestion assigns Telegram only; worker carries lineage; RSS and workspace constraints remain independent.");
     // Simulate old writers during compatibility, including an in-progress lease.
     const post = await prisma.originalPost.create({ data: { workspaceId: workspace.id, sourceChannelId: source.id, telegramChatId: "-10012345", telegramMessageId: 3, originalText: "Legacy original", publishedAt: new Date(0) } });
-    const legacyDraft = await prisma.aiDraft.create({ data: { workspaceId: workspace.id, originalPostId: post.id, aiText: "Old", finalText: "Edited", model: "fixture", effectivePrompt: "Saved", settingsRevision: 1 } });
+    const legacyDraft = (await admin.query<{id:string}>(`INSERT INTO ai_draft (id, "workspaceId", "originalPostId", "aiText", "finalText", model, "effectivePrompt", "settingsRevision") VALUES ($1,$2,$3,'Old','Edited','fixture','Saved',1) RETURNING id`, [randomUUID(), workspace.id, post.id])).rows[0];
     await prisma.processingJob.create({ data: { workspaceId: workspace.id, originalPostId: post.id, type: "TELEGRAM_PREPARE", status: "PROCESSING", attempts: 3, lockToken: "saved-lease", lockedUntil: new Date(Date.now() + 60000), lastError: "Saved error" } });
     await prisma.processingJob.create({ data: { workspaceId: workspace.id, originalPostId: post.id, type: "RSS_PREPARE", status: "COMPLETED", attempts: 2, completedAt: new Date(0) } });
     await prisma.user.create({ data: { id: "legacy-user", name: "Legacy", email: "legacy-runtime@example.invalid" } });

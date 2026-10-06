@@ -17,7 +17,9 @@
     "campaigns:catch-up": "tsx scripts/default-campaign-catchup.ts",
     "check:campaign-runtime": "tsx scripts/check-default-campaign-runtime.ts",
     "check:campaign-settings:staged": "tsx scripts/check-campaign-settings-staged.ts",
-    "settings:verify-cutover": "tsx scripts/verify-campaign-settings-cutover.ts"
+    "settings:verify-cutover": "tsx scripts/verify-campaign-settings-cutover.ts",
+    "check:campaign-execution:staged": "tsx scripts/check-campaign-settings-staged.ts",
+    "campaigns:audit-execution": "tsx scripts/audit-campaign-execution.ts"
   },
   "dependencies": {
     "@next/env": "16.3.8",

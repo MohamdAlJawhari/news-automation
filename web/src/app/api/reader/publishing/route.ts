@@ -1,7 +1,6 @@
-import { isDefaultCampaign } from "@/lib/default-campaign";
 import { prisma } from "@/lib/prisma";
 import { authenticateIngestReader } from "@/lib/ingest-auth";
-import { claimPublication, lockPublishing, recordPublicationResult, type PublicationResult } from "@/lib/publishing-db";
+import { authorizePublication, claimPublication, lockPublishing, recordPublicationResult, type PublicationResult } from "@/lib/publishing-db";
 import { hasAiAccess } from "@/lib/ai-db";
 import { connectedWorkspace } from "@/lib/ai-config";
 export const runtime = "nodejs";
@@ -11,12 +10,13 @@ export async function GET(request: Request) {
   const auth = authenticateIngestReader(request); if (auth.error) return auth.error;
   try {
     const data = await prisma.$transaction(async tx => {
-      const { workspace, settings, telegramState } = await lockPublishing(tx, auth.workspaceId);
+      const { workspace, telegramState } = await lockPublishing(tx, auth.workspaceId);
       if (!hasAiAccess(workspace) || !connectedWorkspace(auth.workspaceId)) return null;
       const recovery = await tx.telegramPublication.findFirst({ where: { workspaceId: auth.workspaceId, status: "DELIVERY_UNKNOWN", recoveryMessageId: { not: null } } });
-      return { verification: settings?.verificationPending ? { username: settings.destinationUsername, revision: settings.revision } : null, recovery, floodWaitUntil: telegramState?.floodWaitUntil ?? null };
+      const verifications = await tx.campaignPublishingSettings.findMany({ where: { workspaceId: auth.workspaceId, verificationPending: true }, select: { campaignId: true, destinationUsername: true, revision: true }, orderBy: [{ updatedAt: "asc" }, { campaignId: "asc" }], take: 10 });
+      return { protocolVersion: 2, verifications: verifications.map(v => ({ campaignId: v.campaignId, username: v.destinationUsername, revision: v.revision })), recovery, floodWaitUntil: telegramState?.floodWaitUntil ?? null };
     });
-    return Response.json(data ?? { verification: null, recovery: null }, { headers: { "Cache-Control": "no-store" } });
+    return Response.json(data ?? { protocolVersion: 2, verifications: [], recovery: null }, { headers: { "Cache-Control": "no-store" } });
   } catch { return Response.json({ error: "Publishing service unavailable." }, { status: 503 }); }
 }
 
@@ -38,10 +38,11 @@ export async function POST(request: Request) {
       return Response.json({ accepted: true });
     }
     if (body.action === "verify") {
-      if (!Number.isInteger(body.revision) || typeof body.username !== "string" ||
+      if (typeof body.campaignId !== "string" || body.campaignId.length > 200 || !Number.isInteger(body.revision) || typeof body.username !== "string" ||
         (body.chatId !== undefined && (typeof body.chatId !== "string" || !/^-100[1-9]\d{0,15}$/.test(body.chatId)))) return Response.json({ error: "Invalid verification." }, { status: 400 });
       const accepted = await prisma.$transaction(async tx => {
-        const { workspace, settings } = await lockPublishing(tx, auth.workspaceId);
+        const { workspace } = await lockPublishing(tx, auth.workspaceId);
+        const settings = await tx.campaignPublishingSettings.findFirst({ where: { workspaceId: auth.workspaceId, campaignId: body.campaignId } });
         if (!hasAiAccess(workspace) || !settings?.verificationPending || settings.revision !== body.revision || settings.destinationUsername !== body.username) return false;
         const conflict = body.chatId && await tx.sourceChannel.count({ where: { workspaceId: auth.workspaceId, OR: [{ username: body.username }, { telegramChatId: body.chatId }] } });
         await tx.campaignPublishingSettings.update({ where: { campaignId_workspaceId: { campaignId: settings.campaignId, workspaceId: auth.workspaceId } }, data: {
@@ -55,17 +56,10 @@ export async function POST(request: Request) {
     }
     if (typeof body.id !== "string" || body.id.length > 100 || typeof body.token !== "string" || body.token.length > 100) return Response.json({ error: "Invalid claim." }, { status: 400 });
     if (body.action === "authorize") {
-      const authorized = await prisma.$transaction(async tx => {
-        const { workspace, settings } = await lockPublishing(tx, auth.workspaceId);
-        const p = await tx.telegramPublication.findFirst({ where: { id: body.id, workspaceId: auth.workspaceId, lockToken: body.token, status: "SENDING", lockedUntil: { gt: new Date() } }, include: { draft: { include: { originalPost: { include: { sourceChannel: true } } } } } });
-        return Boolean(connectedWorkspace(auth.workspaceId) && hasAiAccess(workspace) && settings?.enabled && settings.verifiedAt && !settings.verificationPending && p && await isDefaultCampaign(tx, auth.workspaceId, p.draft.campaignId) &&
-          settings.revision === p.destinationRevision && settings.destinationChatId === p.destinationChatId &&
-          p.draft.reviewStatus === "APPROVED" && p.draft.editRevision === p.draftRevision && p.text === p.draft.finalText &&
-          p.draft.originalPost.sourceChannel.enabled && p.draft.originalPost.sourceChannel.telegramAutomationEnabled);
-      });
+      const authorized = await prisma.$transaction(tx => authorizePublication(tx, auth.workspaceId, body.id, body.token));
       return Response.json({ authorized });
     }
-    if (body.action === "result" && ["published", "failed", "unknown", "flood"].includes(body.outcome)) {
+    if (body.action === "result" && ["published", "failed", "unknown", "flood", "paused"].includes(body.outcome)) {
       if (body.outcome === "flood" && (!Number.isSafeInteger(body.seconds) || body.seconds < 1 || body.seconds > 2147483647)) return Response.json({ error: "Invalid flood wait." }, { status: 400 });
       const result: PublicationResult = { id: body.id, token: body.token, outcome: body.outcome, chatId: body.chatId, messageId: body.messageId, publishedAt: body.publishedAt,
         error: safeError(body.error), seconds: typeof body.seconds === "number" && Number.isFinite(body.seconds) ? body.seconds : undefined };

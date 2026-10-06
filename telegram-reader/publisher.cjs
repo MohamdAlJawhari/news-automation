@@ -105,8 +105,9 @@ function createPublisher(client, config, isStopped, options = {}) {
         if (tasks.floodWaitUntil && Date.parse(tasks.floodWaitUntil) > Date.now()) {
             nextTelegramAt = Date.parse(tasks.floodWaitUntil); return;
         }
-        if (tasks.verification) {
-            const v = tasks.verification;
+        const verifications = tasks.verifications || (tasks.verification ? [tasks.verification] : []);
+        for (const v of verifications.slice(0, 3)) {
+            if (stopping()) return;
             try {
                 const resolved = await resolveDestination(client, v.username);
                 await api({ action: "verify", ...v, chatId: resolved.chatId });
@@ -145,7 +146,7 @@ function createPublisher(client, config, isStopped, options = {}) {
                 await store({ id: p.id, token: p.lockToken, outcome: "flood", error: "FLOOD", seconds: e.seconds });
                 await flush(); return;
             }
-            await store({ id: p.id, token: p.lockToken, outcome: "failed", error: ["PERMISSION", "DESTINATION"].includes(e.message) ? e.message : "PAUSED" });
+            await store({ id: p.id, token: p.lockToken, outcome: ["PERMISSION", "DESTINATION"].includes(e.message) ? "failed" : "paused", error: ["PERMISSION", "DESTINATION"].includes(e.message) ? e.message : "PAUSED" });
             await flush(); return;
         }
         // Raw installed teleproto API supports a durable randomId; no formatting

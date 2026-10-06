@@ -74,7 +74,7 @@ test("fresh dispatch authorization failure does not invoke Telegram", async () =
         const body = options.body && JSON.parse(options.body);
         if (body?.action === "claim") return Response.json({ publication: job });
         if (body?.action === "authorize") return Response.json({ authorized: false });
-        if (body?.action === "result") { assert.equal(body.outcome, "failed"); assert.equal(body.error, "PAUSED"); return Response.json({ accepted: true }); }
+        if (body?.action === "result") { assert.equal(body.outcome, "paused"); assert.equal(body.error, "PAUSED"); return Response.json({ accepted: true }); }
         return Response.json({});
     };
     try { await createPublisher(client(async () => { sends++; return updates(); }), config, () => false, { journalDir, fetch }).tick(); assert.equal(sends, 0); }
@@ -104,4 +104,38 @@ test("durable workspace flood wait prevents Telegram resolution on restart", asy
     const fetch = async () => Response.json({ floodWaitUntil: new Date(Date.now() + 60000).toISOString(), verification: { username: "news_output_test", revision: 1 } });
     try { await createPublisher(c, config, () => false, { journalDir, fetch }).tick(); }
     finally { await fs.rm(journalDir, { recursive: true, force: true }); }
+});
+
+test("multiple destination verification echoes campaign and revision with bounded polling", async () => {
+    const journalDir = await fs.mkdtemp(path.join(os.tmpdir(), "publisher-campaigns-"));
+    const verifications = Array.from({ length: 5 }, (_, i) => ({ campaignId: `campaign-${i}`, username: `output_${i}`, revision: i + 7 }));
+    const reports = [];
+    const fetch = async (_, options) => {
+        const body = options.body && JSON.parse(options.body);
+        if (body?.action === "verify") { reports.push(body); return Response.json({ accepted: true }); }
+        if (body?.action === "claim") return Response.json({ publication: null });
+        return Response.json({ protocolVersion: 2, verifications });
+    };
+    try {
+        await createPublisher(client(async () => { throw new Error("must not send"); }), config, () => false, { journalDir, fetch }).tick();
+        assert.equal(reports.length, 3);
+        for (let i = 0; i < reports.length; i++) { assert.equal(reports[i].campaignId, verifications[i].campaignId); assert.equal(reports[i].revision, verifications[i].revision); }
+    } finally { await fs.rm(journalDir, { recursive: true, force: true }); }
+});
+
+test("source aliases resolving to any configured campaign destination are excluded", async () => {
+    const { createChannelManager } = require("./channel-manager.cjs");
+    const originalFetch = global.fetch;
+    global.fetch = async () => Response.json({ destinationChatIds: ["-10011111", "-10022222"], channels: [
+        { id: "alias-a", username: "alias_first", telegramChatId: null },
+        { id: "alias-b", username: "alias_second", telegramChatId: null },
+        { id: "source", username: "safe_source", telegramChatId: null },
+    ] });
+    const c = { getEntity: async username => ({ broadcast: true, username }), getPeerId: async entity => ({ alias_first: "-10011111", alias_second: "-10022222", safe_source: "-10033333" })[entity.username] };
+    try {
+        const manager = createChannelManager(c, { configUrl: "http://localhost/mock", configSecret: "mock" }, () => false);
+        await manager.refreshChannels();
+        assert.equal(manager.getEligibleSource("-10011111"), undefined); assert.equal(manager.getEligibleSource("-10022222"), undefined);
+        assert.equal(manager.getEligibleSource("-10033333").sourceId, "source");
+    } finally { global.fetch = originalFetch; }
 });

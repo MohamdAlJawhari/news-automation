@@ -24,7 +24,6 @@ const previousWorkspace = process.env.INGEST_WORKSPACE_ID;
 const workspaceId = "campaign-workspace-a";
 const tables = ["user", "workspace", "source_channel", "original_post", "processing_job", "ai_draft", "telegram_publication", "workspace_ai_settings", "workspace_publishing_settings", "rss_feed", "rss_item"];
 let sequence = 1;
-let campaignsApplied = false;
 type LegacyDraft = { id: string; workspaceId: string; originalPostId: string; finalText: string; editRevision: number };
 type Row = Record<string, unknown>;
 async function snapshot() {
@@ -47,7 +46,7 @@ async function original(sourceChannelId = "campaign-source-on", ws = workspaceId
 }
 async function draft(sourceChannelId = "campaign-source-on", ws = workspaceId) {
   const post = await original(sourceChannelId, ws);
-  if (campaignsApplied) return db.aiDraft.create({ data: { workspaceId: ws, originalPostId: post.id, aiText: "Synthetic rewrite", finalText: "Saved approved synthetic text", model: "fixture", effectivePrompt: "Fixture prompt", settingsRevision: 7, editRevision: 3, reviewStatus: "APPROVED" } });
+
   // Raw legacy inserts also work if the operator already generated a newer
   // client that would otherwise SELECT the not-yet-created campaignId column.
   return (await admin.query<LegacyDraft>(`INSERT INTO ai_draft (id, "workspaceId", "originalPostId", "aiText", "finalText", model, "effectivePrompt", "settingsRevision", "editRevision", "reviewStatus")
@@ -105,7 +104,6 @@ async function main() {
     await db.rssItem.create({ data: { workspaceId, feedId: "campaign-rss-feed", originalPostId: publishedOriginal, title: "Saved RSS title", content: "Edited RSS history", publishedAt: new Date(0), visible: false } });
     const before = await snapshot(); const priorProtections = await protections();
     await admin.query(await readFile(`prisma/migrations/${migrationName}/migration.sql`, "utf8"));
-    campaignsApplied = true;
     assert.deepEqual(await snapshot(), before);
     assert.deepEqual(await protections(), priorProtections);
     const campaigns = (await admin.query(`SELECT * FROM campaign ORDER BY "workspaceId"`)).rows;

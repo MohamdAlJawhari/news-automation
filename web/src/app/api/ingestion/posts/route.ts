@@ -1,3 +1,4 @@
+import { destinationConflict } from "@/lib/campaign-execution";
 import { syncDefaultMembership } from "@/lib/default-campaign";
 import { prisma } from "@/lib/prisma";
 import { authenticateIngestReader } from "@/lib/ingest-auth";
@@ -102,7 +103,7 @@ export async function POST(request: Request) {
         try {
             const result = await prisma.$transaction(
                 async (tx) => {
-                    const { settings: publishingSettings } = await lockPublishing(tx, workspaceId);
+                    await lockPublishing(tx, workspaceId);
                     const workspace = await tx.workspace.findFirst({
                         where: {
                             id: workspaceId,
@@ -152,7 +153,7 @@ export async function POST(request: Request) {
                         };
                     }
 
-                    if (publishingSettings?.destinationChatId === telegramChatId || publishingSettings?.destinationUsername === source.username) {
+                    if (await destinationConflict(tx, workspaceId, source.username, telegramChatId)) {
                         return { status: 409, body: { error: "The publishing destination cannot be a source." } };
                     }
 
@@ -184,7 +185,7 @@ export async function POST(request: Request) {
                         });
                     }
 
-                    const campaign = await syncDefaultMembership(tx, workspaceId, source.id);
+                    await syncDefaultMembership(tx, workspaceId, source.id);
                     const inserted = await tx.originalPost.createMany({
                         data: [
                             {
@@ -211,6 +212,7 @@ export async function POST(request: Request) {
                         },
                         select: {
                             id: true,
+                            receivedAt: true,
                         },
                     });
 
@@ -225,33 +227,24 @@ export async function POST(request: Request) {
                         };
                     }
 
-                    const jobTypes: Array<
-                        "RSS_PREPARE" | "TELEGRAM_PREPARE"
-                    > = [];
-
-                    if (workspace.rssEnabled) {
-                        jobTypes.push("RSS_PREPARE");
-                    }
-
+                    const jobs: Array<{ workspaceId: string; originalPostId: string; type: "RSS_PREPARE" | "TELEGRAM_PREPARE"; campaignId: string | null }> = [];
+                    if (workspace.rssEnabled) jobs.push({ workspaceId, originalPostId: original.id, type: "RSS_PREPARE", campaignId: null });
                     if (workspace.automationEnabled) {
-                        jobTypes.push("TELEGRAM_PREPARE");
+                        // Disabled participation/settings pause execution, not collection
+                        // of eligible future jobs. Unactivated campaigns never get history.
+                        const memberships = await tx.campaignSource.findMany({ where: { workspaceId, sourceChannelId: source.id,
+                            eligibleAfter: { lt: original.receivedAt }, campaign: { executionStartsAt: { lt: original.receivedAt },
+                                aiSettings: { activatedAt: { lt: original.receivedAt } } } } });
+                        for (const membership of memberships) jobs.push({ workspaceId, originalPostId: original.id, type: "TELEGRAM_PREPARE", campaignId: membership.campaignId });
                     }
-
-                    await tx.processingJob.createMany({
-                        data: jobTypes.map((type) => ({
-                            workspaceId,
-                            originalPostId: original.id,
-                            campaignId: type === "TELEGRAM_PREPARE" ? campaign.id : null,
-                            type,
-                        })),
-                    });
+                    const queued = jobs.length ? await tx.processingJob.createMany({ data: jobs, skipDuplicates: true }) : { count: 0 };
 
                     return {
                         status: 201,
                         body: {
                             originalPostId: original.id,
                             duplicate: false,
-                            jobsCreated: jobTypes.length,
+                            jobsCreated: queued.count,
                         },
                     };
                 },
@@ -279,7 +272,7 @@ export async function POST(request: Request) {
                 );
             }
 
-            console.error("Saving original post failed:", error);
+            console.error("Saving original post failed.");
 
             return Response.json(
                 { error: "Could not save the original post." },
