@@ -1,5 +1,7 @@
 # Campaign-aware execution
 
+> UI status update: Default-only route descriptions and the campaign-UI deferral below are superseded by [CAMPAIGN_UI.md](CAMPAIGN_UI.md). Backend rollout gates, migration history, worker rules and recovery instructions remain in force.
+
 This change supports one Telegram preparation job and draft per eligible campaign for a single stored original. Current website routes still configure and display **Default only**. Publishing remains an explicit manual operation on a saved, approved draft. There is no campaign-management UI, automatic publishing, bot, n8n dependency in this path, or additional Telegram login.
 
 The campaign foundation and campaign settings migrations are prerequisites. `AI_PREPARATION.md`, `DIRECT_PUBLISHING.md`, and the earlier campaign rollout documents were not present in this checkout when this implementation was inspected; the schema, applied SQL migrations, reader, workers, actions, and existing checks were used as the current specification.

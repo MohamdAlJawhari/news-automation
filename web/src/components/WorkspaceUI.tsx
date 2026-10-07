@@ -9,16 +9,18 @@ export function WorkspaceShell({
   children,
   user,
   active,
+  campaignNavigation,
 }: {
   children: ReactNode;
   user?: CurrentAccess["user"];
   active?: NavigationSection;
+  campaignNavigation?: ReactNode;
 }) {
   return (
     <main className="workspace-ui">
-      <div className="shell space-y-7">
-        {user && <AppNavigation user={user} active={active} />}
-        {children}
+      <div className={`shell ${user ? "app-layout" : ""}`}>
+        {user && <AppNavigation user={user} active={active} campaignNavigation={campaignNavigation} />}
+        <div className="app-content space-y-7">{children}</div>
       </div>
     </main>
   );

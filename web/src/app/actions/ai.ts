@@ -9,7 +9,7 @@ import { BLOCKING_PUBLICATIONS } from "@/lib/publishing-config";
 
 export type AiActionState = { success: boolean; message: string; revision: number };
 
-export async function saveAiSettings(previous: AiActionState, form: FormData): Promise<AiActionState> {
+async function saveSettings(previous: AiActionState, form: FormData, campaignId?: string): Promise<AiActionState> {
   const { workspace } = await requireWorkspaceAccess("automation");
   const fail = (message: string) => ({ ...previous, success: false, message });
   const systemPrompt = form.get("systemPrompt");
@@ -24,12 +24,12 @@ export async function saveAiSettings(previous: AiActionState, form: FormData): P
   if (enabled && !connectedWorkspace(workspace.id)) return fail("This workspace has no connected Telegram reader. Activation is available only for the server-configured ingestion workspace.");
   try {
     const result = await prisma.$transaction(async (tx) => {
-      const current = await lockAiAccess(tx, workspace.id);
+      const current = await lockAiAccess(tx, workspace.id, campaignId);
       if (!hasAiAccess(current)) return null;
       const settings = current!.aiSettings;
       if (settings.revision !== revision) return null;
       // PostgreSQL clock establishes the one-time boundary; saves/resume preserve it.
-      const times = await tx.$queryRaw<{ now: Date }[]>`SELECT clock_timestamp() AS now`;
+      const times = await tx.$queryRaw<{ now: Date }[]>`SELECT timezone('UTC', clock_timestamp()) AS now`;
       const changed = await tx.campaignAiSettings.update({
         where: { campaignId_workspaceId: { campaignId: settings.campaignId, workspaceId: workspace.id } },
         data: { systemPrompt: systemPrompt.trim(), editorialPerspective: editorialPerspective.trim(), model,
@@ -40,14 +40,15 @@ export async function saveAiSettings(previous: AiActionState, form: FormData): P
     });
     if (!result) return fail("Access or settings changed. Copy unsaved text and reload the page.");
     revalidatePath("/workspace/ai-settings");
+    revalidatePath("/workspace/campaigns", "layout");
     return { success: true, message: enabled ? "Saved. New posts received after first activation are eligible." : "Saved. AI preparation is paused.", revision: result };
   } catch { return fail("Could not save AI settings. Please try again."); }
 }
 
-export async function saveAiDraft(previous: AiActionState, form: FormData): Promise<AiActionState> {
+async function saveDraft(previous: AiActionState, form: FormData, campaignId?: string): Promise<AiActionState> {
   const { workspace } = await requireWorkspaceAccess("automation");
   const fail = (message: string) => ({ ...previous, success: false, message });
-  const id = form.get("id");
+  const id = form.get("draftId") ?? form.get("id");
   const finalText = form.get("finalText");
   const revision = Number(form.get("revision"));
   const intent = form.get("intent");
@@ -58,7 +59,7 @@ export async function saveAiDraft(previous: AiActionState, form: FormData): Prom
   }
   try {
     const count = await prisma.$transaction(async (tx) => {
-      const access = await lockAiAccess(tx, workspace.id);
+      const access = await lockAiAccess(tx, workspace.id, campaignId);
       if (!hasAiAccess(access)) return 0;
       const result = await tx.aiDraft.updateMany({
         where: { id, workspaceId: workspace.id, campaignId: access!.defaultCampaign.id, editRevision: revision,
@@ -70,6 +71,21 @@ export async function saveAiDraft(previous: AiActionState, form: FormData): Prom
     });
     if (count !== 1) return fail("This draft changed or access is unavailable. Copy unsaved text, then reload.");
     revalidatePath("/workspace/ai-drafts");
+    revalidatePath("/workspace/campaigns", "layout");
     return { success: true, revision: revision + 1, message: intent === "approve" ? "Approved for review records. Nothing was sent to Telegram." : intent === "reject" ? "Draft rejected." : "Final text saved; pending review." };
   } catch { return fail("Could not save the draft. Please try again."); }
+}
+
+// Legacy actions deliberately ignore submitted campaign IDs and remain Default-only.
+export async function saveAiSettings(previous: AiActionState, form: FormData) { return saveSettings(previous, form); }
+export async function saveAiDraft(previous: AiActionState, form: FormData) { return saveDraft(previous, form); }
+export async function saveCampaignAiSettings(previous: AiActionState, form: FormData) {
+  const id = form.get("campaignId");
+  if (typeof id !== "string" || !id || id.length > 200) return { ...previous, success: false, message: "Invalid campaign. Reload first." };
+  return saveSettings(previous, form, id);
+}
+export async function saveCampaignAiDraft(previous: AiActionState, form: FormData) {
+  const id = form.get("campaignId");
+  if (typeof id !== "string" || !id || id.length > 200) return { ...previous, success: false, message: "Invalid campaign. Reload first." };
+  return saveDraft(previous, form, id);
 }

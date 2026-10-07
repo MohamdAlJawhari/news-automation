@@ -2,7 +2,9 @@
 
 News Automation collects posts from selected Telegram channels, preserves their original text, and prepares content for RSS feeds and editorial review. The web application manages workspace access, source channels, feed rules, and AI drafts.
 
-The current PostgreSQL AI stage prepares drafts with local Ollama. It does not publish them to Telegram. An older owner-only SQLite/n8n review and publishing workflow remains available separately.
+The PostgreSQL campaign workflow prepares drafts with local Ollama, then supports separate manual Save, Approve and Publish actions through the connected reader. An older owner-only SQLite/n8n review and publishing workflow remains available separately.
+
+See [CAMPAIGN_UI.md](CAMPAIGN_UI.md) for the current campaign interface, validation and restart handoff. Earlier workspace-only AI UI instructions below are superseded by that document.
 
 ## Current features
 
@@ -37,14 +39,14 @@ RSS processing runs independently of the AI preparation worker.
 
 ### Local AI preparation and review
 
-- Workspace settings for an enabled state, editable system prompt, preferred editorial perspective, and an explicit local-model allowlist.
+- Campaign settings for an enabled state, editable system prompt, preferred editorial perspective, and an explicit local-model allowlist.
 - Initial model: `gpt-oss:latest`; initial state: disabled.
 - A one-time server activation timestamp: only originals received afterward are eligible. Publication dates do not control eligibility, and older pending jobs remain untouched.
 - Local Ollama rewriting with editorial instructions separate from untrusted source text.
 - Final-answer validation, bounded timeouts, retries, atomic claims, expiring leases, and crash recovery.
 - Fresh approval, automation, and settings checks before generation and saving; stale results are discarded.
-- One PostgreSQL AI draft per original in each workspace, preserving originals and later manual edits.
-- A paginated **AI Drafts** page showing original text, AI text, and editable final text, with Save, Approve, Reject, and stale-edit protection.
+- One PostgreSQL AI draft per original in each campaign, preserving originals and later manual edits.
+- A searchable, paginated campaign **Drafts** page with Cards/Compare layouts and expandable original post/AI output, with Save, Approve, Reject, and stale-edit protection.
 - Exactly `NO_NEWS_CONTENT` records a terminal skipped outcome without creating a draft.
 
 Approve records a review decision only. It sends nothing to Telegram. Thinking output is never used as news text.
@@ -153,7 +155,7 @@ Use separate terminals for the web application, reader, and each worker. Command
    npm.cmd run worker:telegram
    ```
 
-   Ensure Ollama is running with `gpt-oss:latest` installed. Enable AI preparation at `/workspace/ai-settings` in the connected workspace, then receive new posts. Review generated drafts at `/workspace/ai-drafts`.
+   Ensure Ollama is running with `gpt-oss:latest` installed. Choose a campaign at `/workspace/campaigns`, join/resume source participation in Overview and enable AI preparation in Settings, then receive new posts. Review generated drafts in that campaign?s Drafts page.
 
    To process at most one eligible job per worker:
 
@@ -173,8 +175,12 @@ For a production web build, run `npm.cmd run build` followed by `npm.cmd run sta
 | `/workspace/sources` | PostgreSQL source-channel dashboard. |
 | `/workspace/rss?source=<id>` | Selected channel's RSS settings and feed-link management. |
 | `/workspace/rss/items?source=<id>` | Original/processed posts and manual RSS editing. |
-| `/workspace/ai-settings` | Workspace AI preparation settings and activation. |
-| `/workspace/ai-drafts` | PostgreSQL AI draft review. |
+| `/workspace/campaigns` | Campaign dashboard with search, sort, grid/list and create/rename/delete-empty dialogs. |
+| `/workspace/campaigns/[campaignId]` | Source participation, destination and manual publishing Overview. |
+| `/workspace/campaigns/[campaignId]/settings` | Campaign AI settings and activation. |
+| `/workspace/campaigns/[campaignId]/drafts` | Campaign drafts, comparison, saved review and manual publishing. |
+| `/workspace/ai-settings` | Compatibility redirect to Default campaign Settings. |
+| `/workspace/ai-drafts` | Compatibility redirect to Default campaign Drafts. |
 | `/rss/<token>` | Token-protected RSS XML feed. |
 | `/review`, `/channels` | Owner-only legacy SQLite review/publishing and source management. |
 | `/users` | Owner-only account approval and workspace service permissions. |

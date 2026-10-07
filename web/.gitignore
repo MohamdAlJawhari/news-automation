@@ -45,3 +45,6 @@ next-env.d.ts
 
 # Separate campaign schema/client validation artifacts
 /.campaign-settings-validation/
+
+# Disposable campaign UI/browser fixtures
+/.campaign-ui-validation/

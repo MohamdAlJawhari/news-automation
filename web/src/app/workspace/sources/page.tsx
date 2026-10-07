@@ -144,12 +144,12 @@ export default async function WorkspaceSourcesPage({
                   </span>
                 </p>
                 <div className="grid grid-cols-2 gap-2">
-                  <Link
+                  {workspace.rssEnabled && <Link
                     href={`/workspace/rss/items?source=${encodeURIComponent(source.id)}`}
                     className="button primary"
                   >
-                    View Posts
-                  </Link>
+                    View RSS posts
+                  </Link>}
                   {workspace.rssEnabled && (
                     <>
                       <Link href={settings} className="button">

@@ -1,3 +1,5 @@
+> Project handoff: [Campaign UI](../CAMPAIGN_UI.md) documents current routes, validation and restart instructions. The generic Next.js setup below is framework reference only; campaign workflow instructions there are authoritative.
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started

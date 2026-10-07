@@ -1,35 +1,29 @@
 import Link from "next/link";
 import SignOutButton from "@/components/SignOutButton";
 import type { CurrentAccess } from "@/lib/access";
-export type NavigationSection = "channels" | "review" | "users" | "ai-drafts" | "ai-settings" | "publishing";
+import OutlineIcon, { type IconName } from "./OutlineIcon";
+export type NavigationSection = "campaigns" | "channels" | "review" | "users" | "ai-drafts" | "ai-settings" | "publishing";
 export default function AppNavigation({
   user,
   active,
+  campaignNavigation,
 }: {
   user: CurrentAccess["user"];
   active?: NavigationSection;
+  campaignNavigation?: React.ReactNode;
 }) {
   const owner =
     user.emailVerified &&
     user.approvalStatus === "APPROVED" &&
     user.platformRole === "OWNER";
+  const eligible = user.emailVerified && user.approvalStatus === "APPROVED";
   const links = [
-    { key: "channels", label: "Channels", href: "/workspace/sources" },
-    ...(user.emailVerified && user.approvalStatus === "APPROVED" && user.workspace?.automationEnabled
-      ? [
-          { key: "ai-drafts", label: "AI Drafts", href: "/workspace/ai-drafts" },
-          { key: "ai-settings", label: "AI settings", href: "/workspace/ai-settings" },
-          { key: "publishing", label: "Publishing", href: "/workspace/publishing" },
-        ] : []),
-    ...(owner
-      ? [
-          { key: "review", label: "News Review", href: "/review" },
-          { key: "users", label: "Users", href: "/users" },
-        ]
-      : []),
+    ...(eligible && user.workspace?.automationEnabled ? [{ key: "campaigns", label: "Campaigns", href: "/workspace/campaigns" }] : []),
+    ...(eligible && (user.workspace?.rssEnabled || user.workspace?.automationEnabled) ? [{ key: "channels", label: "Sources / RSS", href: "/workspace/sources" }] : []),
+    ...(owner ? [{ key: "users", label: "Users", href: "/users" }] : []),
   ];
   return (
-    <header className="topbar card">
+    <aside className="app-sidebar">
       <Link href="/" className="brand">
         Telegram Feed Platform
       </Link>
@@ -40,16 +34,17 @@ export default function AppNavigation({
             href={link.href}
             aria-current={active === link.key ? "page" : undefined}
           >
-            {link.label}
+            <OutlineIcon name={(link.key === "channels" ? "sources" : link.key) as IconName} />{link.label}
           </Link>
         ))}
       </nav>
+      {campaignNavigation}
       <div className="topbar-account">
         <span className="muted account-identity" title={user.email}>
           {user.email}
         </span>
         <SignOutButton />
       </div>
-    </header>
+    </aside>
   );
 }

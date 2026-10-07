@@ -56,7 +56,7 @@ export function getEntryDestination(access: CurrentAccess | null) {
     user.workspace &&
     (user.workspace.rssEnabled || user.workspace.automationEnabled)
   ) {
-    return "/workspace/sources";
+    return user.workspace.automationEnabled ? "/workspace/campaigns" : "/workspace/sources";
   }
   return "/account-status";
 }
