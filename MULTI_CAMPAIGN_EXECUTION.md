@@ -1,5 +1,7 @@
 # Campaign-aware execution
 
+Campaign Auto-send is now implemented in [AUTO_SEND.md](AUTO_SEND.md). That document supersedes automatic-publishing deferrals here and adds a migration/deployment step; existing manual queue, AI pause/resume, receipts and recovery protections still apply.
+
 > UI status update: Default-only route descriptions and the campaign-UI deferral below are superseded by [CAMPAIGN_UI.md](CAMPAIGN_UI.md). Backend rollout gates, migration history, worker rules and recovery instructions remain in force.
 
 This change supports one Telegram preparation job and draft per eligible campaign for a single stored original. Current website routes still configure and display **Default only**. Publishing remains an explicit manual operation on a saved, approved draft. There is no campaign-management UI, automatic publishing, bot, n8n dependency in this path, or additional Telegram login.

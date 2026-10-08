@@ -6,7 +6,7 @@ import { hasAiAccess, lockAiAccess } from "@/lib/ai-db";
 import { createCampaign } from "@/lib/campaign-settings";
 import { destinationConflict, membershipFor, setCampaignMembership } from "@/lib/campaign-execution";
 
-export type CampaignActionState = { success: boolean; message: string; campaignId?: string; updatedAt?: string };
+export type CampaignActionState = { success: boolean; message: string; campaignId?: string; updatedAt?: string; enabled?: boolean; revision?: number };
 function refresh() { revalidatePath("/workspace/campaigns", "layout"); revalidatePath("/workspace/sources"); }
 function id(form: FormData, key: string) {
   const value = form.get(key); return typeof value === "string" && value.length > 0 && value.length <= 200 ? value : null;
@@ -84,6 +84,7 @@ export async function changeCampaignSource(_: CampaignActionState, form: FormDat
       return intent === "resume" ? "Participation resumed. Retained eligible pending jobs can now run." : "Participation paused. Originals, drafts, queued work and RSS are preserved.";
     });
     const success = message.startsWith("Source joined") || message.startsWith("Participation paused") || message.startsWith("Participation resumed");
-    refresh(); return { success, message };
+    const saved = await membershipFor(prisma, workspace.id, campaignId, sourceId);
+    refresh(); return { success, message, ...(saved ? { enabled: saved.telegramAutomationEnabled, revision: saved.revision } : {}) };
   } catch { return { success: false, message: "Campaign or source is unavailable in your workspace." }; }
 }

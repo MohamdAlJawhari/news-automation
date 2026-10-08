@@ -40,6 +40,7 @@ async function main() {
   // Generate a separate client. Never regenerate the running application's client.
   await run(["node_modules/prisma/build/index.js", "generate", "--schema", `${stage}/schema.prisma`, "--config", "./prisma7.config.ts"]);
   const legacySchema = schema
+    .replace(/^  (autoSend\w+|approvalMode|manualAttentionReason|deliveryMode|queuedAutomatically)[^\n]*\n/gm, '')
     .replace('output = "./client"', 'output = "./legacy-client"')
     .replace('  aiDrafts AiDraft[]\n  rssItem', '  aiDraft AiDraft?\n  rssItem')
     .replace(/  executionStartsAt[^\n]*\n/, '')
@@ -67,8 +68,11 @@ async function main() {
     throw new Error("Staged TypeScript validation failed.");
   }
   console.log("PASS: TypeScript against separate staged Prisma Client.");
-  if (process.argv.includes("--types-only")) return;
-  for (const script of ["check-multi-campaign-execution.ts", "check-telegram-preparation.ts", "check-direct-publishing.ts"]) {
+  if (process.argv.includes("--types-only")) {
+    if (process.argv.includes("--build")) await stagedBuild(stage);
+    return;
+  }
+  for (const script of ["check-multi-campaign-execution.ts", "check-telegram-preparation.ts", "check-direct-publishing.ts", "check-auto-send.ts"]) {
     await run(["--import", "./scripts/staged-campaign-client.mjs", "--import", "tsx", `scripts/${script}`]);
   }
   if (process.argv.includes("--build")) await stagedBuild(stage);

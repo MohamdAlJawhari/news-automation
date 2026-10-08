@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { useActionState, useState } from "react";
 import { useUnsavedChanges } from "./useUnsavedChanges";
+import SettingSwitch, { useSettingSwitch } from "./SettingSwitch";
 import { createCampaignAction, renameCampaign, changeCampaignSource, deleteEmptyCampaign, type CampaignActionState } from "@/app/actions/campaigns";
 const initial: CampaignActionState = { success: false, message: "" };
 export function CampaignNameForm({ campaign }: { campaign?: { id: string; name: string; updatedAt: string } }) {
@@ -22,13 +23,16 @@ export function CampaignNameForm({ campaign }: { campaign?: { id: string; name: 
   </form>;
 }
 export function CampaignSourceForm({ campaignId, sourceId, membership, excluded }: { campaignId: string; sourceId: string; membership?: { revision: number; telegramAutomationEnabled: boolean }; excluded: boolean }) {
-  const [state, action, pending] = useActionState(changeCampaignSource, initial);
-  const intent = !membership ? "join" : membership.telegramAutomationEnabled ? "pause" : "resume";
-  return <form action={action} className="space-y-2"><input type="hidden" name="campaignId" value={campaignId} /><input type="hidden" name="sourceId" value={sourceId} /><input type="hidden" name="revision" value={membership?.revision ?? 0} />
-    <label className="flex gap-3 items-center"><input type="checkbox" aria-label="Participate in this campaign" checked={Boolean(membership?.telegramAutomationEnabled)} disabled={!membership || pending || (excluded && intent !== "pause")} onChange={event => { const form = event.currentTarget.form!; form.requestSubmit(form.querySelector('button')!); }} />Participate in this campaign</label>
-    <button className="button" hidden={Boolean(membership)} name="intent" value={intent} disabled={pending || (excluded && intent !== "pause")}>{pending ? "Saving…" : intent === "join" ? "Join campaign (paused)" : intent === "pause" ? "Pause participation" : "Resume participation"}</button>
-    <p role="status" className={state.success ? "feedback-success" : "feedback-error"}>{state.message}</p>
-  </form>;
+  const [joined, setJoined] = useState(Boolean(membership));
+  const setting = useSettingSwitch(Boolean(membership?.telegramAutomationEnabled), membership?.revision ?? 0, async (next, revision) => {
+    const form = new FormData(); form.set("campaignId", campaignId); form.set("sourceId", sourceId); form.set("revision", String(revision)); form.set("intent", !joined ? "join" : next ? "resume" : "pause");
+    const result = await changeCampaignSource(initial, form); if (result.success) setJoined(true); return result;
+  });
+  return <div className="space-y-2"><SettingSwitch label="Active in this campaign" checked={setting.enabled} pending={setting.pending} disabled={!joined || (excluded && !setting.enabled)} onChange={setting.change} />
+    <p className="muted text-sm">Participation: {joined ? setting.enabled ? "Active" : "Paused" : "Not joined"}</p>
+    {!joined && <button className="button" disabled={setting.pending || excluded} onClick={() => void setting.change(false)}>Join campaign (paused)</button>}
+    <p role="status" className={setting.feedback.success ? "feedback-success" : "feedback-error"}>{setting.feedback.message}</p>
+  </div>;
 }
 export function CampaignDeleteForm({ campaignId, name }: { campaignId: string; name: string }) {
   const [state, action, pending] = useActionState(deleteEmptyCampaign, initial);

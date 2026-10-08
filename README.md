@@ -49,7 +49,7 @@ RSS processing runs independently of the AI preparation worker.
 - A searchable, paginated campaign **Drafts** page with Cards/Compare layouts and expandable original post/AI output, with Save, Approve, Reject, and stale-edit protection.
 - Exactly `NO_NEWS_CONTENT` records a terminal skipped outcome without creating a draft.
 
-Approve records a review decision only. It sends nothing to Telegram. Thinking output is never used as news text.
+Manual Approve records a review decision only. Campaign Auto-send is separately confirmed, off by default, and queues only future eligible posts through the existing reader publisher. Existing drafts remain manual. See [AUTO_SEND.md](AUTO_SEND.md) for flow, schema, validation and rollout/rollback. Thinking output is never used as news text.
 
 ### Separate legacy review and publishing
 

@@ -139,10 +139,11 @@ export default async function WorkspaceSourcesPage({
                     {source.enabled
                       ? source.telegramChatId
                         ? "Enabled"
-                        : "Awaiting connection"
+                        : "No posts received yet"
                       : "Paused"}
                   </span>
                 </p>
+                {source.enabled && !source.telegramChatId && <p className="muted text-sm">The Telegram identity is saved when the first new post is received. Check the reader terminal for channel access or exclusion errors.</p>}
                 <div className="grid grid-cols-2 gap-2">
                   {workspace.rssEnabled && <Link
                     href={`/workspace/rss/items?source=${encodeURIComponent(source.id)}`}

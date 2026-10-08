@@ -73,8 +73,10 @@ async function main() {
     await admin.query(`CREATE SCHEMA "${schema}"`);
     await admin.query(`SET search_path TO "${schema}"`);
     const migrations = (await readdir("prisma/migrations", { withFileTypes: true })).filter(e => e.isDirectory()).map(e => e.name).sort();
-    const migration = await readFile(`prisma/migrations/${migrations.at(-1)}/migration.sql`, "utf8");
-    for (const m of migrations.slice(0, -1)) await admin.query(await readFile(`prisma/migrations/${m}/migration.sql`, "utf8"));
+    const executionIndex = migrations.indexOf("20261006220000_multi_campaign_execution");
+    assert(executionIndex >= 0);
+    const migration = await readFile(`prisma/migrations/${migrations[executionIndex]}/migration.sql`, "utf8");
+    for (const m of migrations.slice(0, executionIndex)) await admin.query(await readFile(`prisma/migrations/${m}/migration.sql`, "utf8"));
     const legacyPath = pathToFileURL(path.resolve(".campaign-settings-validation/legacy-client/client.ts")).href;
     const LegacyClient = (await import(legacyPath)).PrismaClient as typeof PrismaClient;
     legacy = new LegacyClient({ adapter: new PrismaPg({ connectionString, options: `-c search_path=${schema}` }, { schema }) });
@@ -114,8 +116,13 @@ async function main() {
     });
     const before = await protections();
     await admin.query(migration);
-    assert.deepEqual(await prisma.telegramPublication.findMany({ orderBy: { id: "asc" } }), snapshots);
-    assert.deepEqual(await protections(), before);
+    for (const m of migrations.slice(executionIndex + 1)) await admin.query(await readFile(`prisma/migrations/${m}/migration.sql`, "utf8"));
+    assert.deepEqual((await prisma.telegramPublication.findMany({ orderBy: { id: "asc" } })).map(({ deliveryMode, queuedAutomatically, autoSendGeneration, ...p }) => {
+      assert.equal(deliveryMode, "MANUAL"); assert.equal(queuedAutomatically, false); assert.equal(autoSendGeneration, null); return p;
+    }), snapshots);
+    const after = await protections();
+    assert.deepEqual(after.indexes, before.indexes);
+    assert.deepEqual(after.triggers.filter(t => t.tgname !== "protect_auto_publication_origin"), before.triggers);
     assert.equal((await prisma.processingJob.findFirstOrThrow({ where: { originalPostId: nullPost.id } })).lockToken, "old-lease");
     await assert.rejects(catchUpDefaultCampaigns(prisma), /retired/);
     await assert.rejects(prisma.sourceChannel.update({ where: { id: "publishing-source" }, data: { telegramAutomationEnabled: false } }));

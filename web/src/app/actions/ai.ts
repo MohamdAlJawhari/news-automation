@@ -7,7 +7,7 @@ import { connectedWorkspace, LOCAL_MODELS, MAX_AI_TEXT } from "@/lib/ai-config";
 import { hasAiAccess, lockAiAccess } from "@/lib/ai-db";
 import { BLOCKING_PUBLICATIONS } from "@/lib/publishing-config";
 
-export type AiActionState = { success: boolean; message: string; revision: number };
+export type AiActionState = { success: boolean; message: string; revision: number; enabled?: boolean };
 
 async function saveSettings(previous: AiActionState, form: FormData, campaignId?: string): Promise<AiActionState> {
   const { workspace } = await requireWorkspaceAccess("automation");
@@ -17,31 +17,35 @@ async function saveSettings(previous: AiActionState, form: FormData, campaignId?
   const model = form.get("model");
   const revision = Number(form.get("revision"));
   const enabled = form.get("enabled") === "on";
-  if (typeof systemPrompt !== "string" || !systemPrompt.trim() || systemPrompt.length > 20000 ||
+  const enablementOnly = form.get("intent") === "enablement";
+  const contentOnly = form.get("intent") === "content";
+  if (!Number.isSafeInteger(revision) || revision < 1 || (!enablementOnly && (typeof systemPrompt !== "string" || !systemPrompt.trim() || systemPrompt.length > 20000 ||
       typeof editorialPerspective !== "string" || editorialPerspective.length > 2000 ||
       typeof model !== "string" || !LOCAL_MODELS.some((allowed) => allowed === model) ||
-      !Number.isSafeInteger(revision) || revision < 1) return fail("Check the prompt, perspective, model and settings version.");
+      !Number.isSafeInteger(revision) || revision < 1))) return fail("Check the prompt, perspective, model and settings version.");
   if (enabled && !connectedWorkspace(workspace.id)) return fail("This workspace has no connected Telegram reader. Activation is available only for the server-configured ingestion workspace.");
   try {
     const result = await prisma.$transaction(async (tx) => {
       const current = await lockAiAccess(tx, workspace.id, campaignId);
       if (!hasAiAccess(current)) return null;
       const settings = current!.aiSettings;
-      if (settings.revision !== revision) return null;
+      if (settings.revision !== revision) return { revision: settings.revision, enabled: settings.enabled, stale: true };
+      const nextEnabled = contentOnly ? settings.enabled : enabled;
       // PostgreSQL clock establishes the one-time boundary; saves/resume preserve it.
       const times = await tx.$queryRaw<{ now: Date }[]>`SELECT timezone('UTC', clock_timestamp()) AS now`;
       const changed = await tx.campaignAiSettings.update({
         where: { campaignId_workspaceId: { campaignId: settings.campaignId, workspaceId: workspace.id } },
-        data: { systemPrompt: systemPrompt.trim(), editorialPerspective: editorialPerspective.trim(), model,
-          enabled, revision: { increment: 1 },
-          activatedAt: settings.activatedAt ?? (enabled ? times[0].now : null) },
+        data: { ...(!enablementOnly ? { systemPrompt: (systemPrompt as string).trim(), editorialPerspective: (editorialPerspective as string).trim(), model: model as string } : {}),
+          enabled: nextEnabled, revision: { increment: 1 },
+          activatedAt: settings.activatedAt ?? (nextEnabled ? times[0].now : null) },
       });
-      return changed.revision;
+      return { revision: changed.revision, enabled: changed.enabled };
     });
     if (!result) return fail("Access or settings changed. Copy unsaved text and reload the page.");
+    if ("stale" in result) return { ...fail("AI settings changed. Keep your unsaved edits and reload before saving."), enabled: result.enabled };
     revalidatePath("/workspace/ai-settings");
     revalidatePath("/workspace/campaigns", "layout");
-    return { success: true, message: enabled ? "Saved. New posts received after first activation are eligible." : "Saved. AI preparation is paused.", revision: result };
+    return { success: true, message: contentOnly ? "AI settings saved." : result.enabled ? "Saved. New posts received after first activation are eligible." : "Saved. AI preparation is paused.", ...result };
   } catch { return fail("Could not save AI settings. Please try again."); }
 }
 
@@ -65,6 +69,7 @@ async function saveDraft(previous: AiActionState, form: FormData, campaignId?: s
         where: { id, workspaceId: workspace.id, campaignId: access!.defaultCampaign.id, editRevision: revision,
           publications: { none: { status: { in: [...BLOCKING_PUBLICATIONS] } } } },
         data: { ...(intent === "save" ? { finalText: (finalText as string).trim() } : {}), editRevision: { increment: 1 },
+          approvalMode: intent === "approve" ? "MANUAL" : null, manualAttentionReason: null,
           reviewStatus: intent === "approve" ? "APPROVED" : intent === "reject" ? "REJECTED" : "PENDING_REVIEW" },
       });
       return result.count;

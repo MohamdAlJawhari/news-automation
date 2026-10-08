@@ -21,7 +21,9 @@
     "check:campaign-execution:staged": "tsx scripts/check-campaign-settings-staged.ts",
     "campaigns:audit-execution": "tsx scripts/audit-campaign-execution.ts",
     "check:campaign-ui": "tsx scripts/check-campaign-ui.ts",
-    "check:campaign-ui:browser": "node scripts/check-campaign-ui-browser.mjs"
+    "check:campaign-ui:browser": "node scripts/check-campaign-ui-browser.mjs",
+    "check:auto-send": "node --import ./scripts/staged-campaign-client.mjs --import tsx scripts/check-auto-send.ts",
+    "check:auto-send:build": "tsx scripts/check-auto-send-build.ts"
   },
   "dependencies": {
     "@next/env": "16.3.8",

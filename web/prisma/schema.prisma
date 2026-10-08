@@ -203,6 +203,7 @@ model ProcessingJob {
   status ProcessingJobStatus @default(PENDING)
 
   attempts    Int      @default(0)
+  autoSendGeneration Int?
   availableAt DateTime @default(now())
 
   lockedUntil DateTime?
@@ -318,6 +319,9 @@ model AiDraft {
   aiText String
   finalText String
   reviewStatus AiReviewStatus @default(PENDING_REVIEW)
+  approvalMode String?
+  autoSendGeneration Int?
+  manualAttentionReason String?
   model String
   effectivePrompt String
   settingsRevision Int
@@ -337,6 +341,10 @@ model Campaign {
   workspaceId String
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
   name String
+  autoSendEnabled Boolean @default(false)
+  autoSendActivatedAt DateTime?
+  autoSendGeneration Int @default(0)
+  autoSendRevision Int @default(1)
   executionStartsAt DateTime @default(dbgenerated("timezone('UTC'::text, clock_timestamp())"))
   // SQL enforces at most one default per workspace with a partial unique index.
   isDefault Boolean @default(false)
@@ -401,6 +409,9 @@ model TelegramPublication {
   draftId String
   draft AiDraft @relation(fields: [draftId, workspaceId], references: [id, workspaceId], onDelete: Restrict)
   draftRevision Int
+  deliveryMode String @default("MANUAL")
+  queuedAutomatically Boolean @default(false)
+  autoSendGeneration Int?
   text String
   destinationChatId String
   destinationUsername String

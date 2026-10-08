@@ -8,7 +8,7 @@ import { hasAiAccess } from "@/lib/ai-db";
 import { connectedWorkspace } from "@/lib/ai-config";
 import { destinationUsername, PublishingError } from "@/lib/publishing-config";
 
-export type PublishingState = { success: boolean; message: string; revision?: number };
+export type PublishingState = { success: boolean; message: string; revision?: number; enabled?: boolean };
 function refresh() {
   revalidatePath("/workspace/publishing");
   revalidatePath("/workspace/ai-drafts");
@@ -18,26 +18,30 @@ async function saveSettings(_: PublishingState, form: FormData, campaignId?: str
   const { workspace } = await requireWorkspaceAccess("automation");
   const username = destinationUsername(form.get("destination"));
   const enabled = form.get("enabled") === "on";
+  const enablementOnly = form.get("intent") === "enablement";
   const revision = Number(form.get("revision"));
-  if (!username || !Number.isSafeInteger(revision)) return { success: false, message: "Enter a public channel username or t.me channel link." };
+  if ((!enablementOnly && !username) || !Number.isSafeInteger(revision) || revision < 1) return { success: false, message: "Enter a public channel username or t.me channel link." };
   if (!connectedWorkspace(workspace.id)) return { success: false, message: "This workspace has no connected Telegram account." };
+  let confirmed: { enabled: boolean; revision: number } | undefined;
   try {
     const savedRevision = await prisma.$transaction(async tx => {
       const current = await lockPublishing(tx, workspace.id, campaignId);
       if (!hasAiAccess(current.workspace)) throw new PublishingError("Access is unavailable.");
+      confirmed = { enabled: current.settings!.enabled, revision: current.settings!.revision };
       if ((current.settings?.revision ?? 1) !== revision) throw new PublishingError("Settings changed. Reload first.");
-      if (await tx.sourceChannel.count({ where: { workspaceId: workspace.id, username } })) throw new PublishingError("The destination cannot also be a monitored source. Choose another channel.");
-      const changed = current.settings?.destinationUsername !== username;
+      if (!enablementOnly && await tx.sourceChannel.count({ where: { workspaceId: workspace.id, username: username! } })) throw new PublishingError("The destination cannot also be a monitored source. Choose another channel.");
+      if (enablementOnly && enabled && !current.settings?.destinationUsername) throw new PublishingError("Configure a destination in Overview first.");
+      const changed = !enablementOnly && current.settings?.destinationUsername !== username;
       const unconfigured = current.settings!.destinationUsername === "" && current.settings!.destinationChatId === null &&
         current.settings!.verifiedAt === null && current.settings!.revision === 1;
       const updated = await tx.campaignPublishingSettings.update({ where: { campaignId_workspaceId: { campaignId: current.settings!.campaignId, workspaceId: workspace.id } },
-        data: { enabled, ...(changed || form.get("verify") === "yes" ? {
-          destinationUsername: username, destinationChatId: null, verifiedAt: null, verificationError: null, verificationPending: true, revision: unconfigured ? 1 : { increment: 1 },
+        data: { enabled: form.get("intent") === "destination" ? current.settings!.enabled : enabled, ...(!enablementOnly && (changed || form.get("verify") === "yes") ? {
+          destinationUsername: username!, destinationChatId: null, verifiedAt: null, verificationError: null, verificationPending: true, revision: unconfigured ? 1 : { increment: 1 },
         } : {}) } });
-      return updated.revision;
+      return { revision: updated.revision, enabled: updated.enabled };
     });
-    refresh(); return { success: true, revision: savedRevision, message: "Saved. The connected reader verifies requested destinations. Disabling cannot recall a send already in flight." };
-  } catch (e) { return { success: false, message: e instanceof PublishingError ? e.message : "Could not save publishing settings." }; }
+    refresh(); return { success: true, ...savedRevision, message: enablementOnly ? savedRevision.enabled ? "Publishing enabled." : "Publishing paused. An authorized or in-flight send cannot be recalled." : "Saved. The connected reader verifies requested destinations. Disabling cannot recall a send already in flight." };
+  } catch (e) { return { success: false, ...confirmed, message: e instanceof PublishingError ? e.message : "Could not save publishing settings." }; }
 }
 async function publishDraft(_: PublishingState, form: FormData, campaignId?: string): Promise<PublishingState> {
   const { workspace } = await requireWorkspaceAccess("automation");

@@ -1,5 +1,9 @@
 # Approved campaign UI
 
+The focused source/destination diagram, Settings execution switches and compact help update is documented in [CAMPAIGN_UI_FLOW.md](CAMPAIGN_UI_FLOW.md). It supersedes the Overview execution-control layout and checkbox/save-button descriptions below. Auto-send is already deployed; this UI update needs only a website build/restart, with no migration or worker/reader restart.
+
+Campaign Auto-send is now implemented; see [AUTO_SEND.md](AUTO_SEND.md) for confirmation, future-only boundaries, automatic approval versus delivery, validation and deployment. Its instructions supersede the automatic-publishing deferral and no-migration UI-only rollout below. The approved white theme is preserved.
+
 This release implements the white/blue sidebar design on the existing campaign-aware backend. The earlier five-tab UI instructions in this document are **superseded** by the routes and workflow below. Backend transition, deployment gates, receipts and recovery procedures remain documented in [MULTI_CAMPAIGN_EXECUTION.md](MULTI_CAMPAIGN_EXECUTION.md); descriptions there of Default-only UI routes are superseded here.
 
 ## Interface and routes

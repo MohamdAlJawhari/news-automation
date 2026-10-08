@@ -5,6 +5,15 @@ import { membershipFor } from "./campaign-execution";
 import { connectedWorkspace } from "./ai-config";
 import { BLOCKING_PUBLICATIONS, MAX_TELEGRAM_TEXT, PublishingError } from "./publishing-config";
 
+export async function automaticPublicationEligible(tx: Prisma.TransactionClient, p: { draftId: string; workspaceId: string; autoSendGeneration: number | null }) {
+  const draft = await tx.aiDraft.findUniqueOrThrow({ where: { id: p.draftId }, include: { campaign: { include: { aiSettings: true } }, originalPost: true } });
+  const c = draft.campaign;
+  return c.workspaceId === p.workspaceId && c.autoSendEnabled && c.aiSettings?.enabled &&
+    p.autoSendGeneration !== null && p.autoSendGeneration === c.autoSendGeneration &&
+    draft.autoSendGeneration === c.autoSendGeneration && c.autoSendActivatedAt !== null &&
+    draft.originalPost.receivedAt > c.autoSendActivatedAt;
+}
+
 export async function lockPublishing(tx: Prisma.TransactionClient, workspaceId: string, campaignId?: string) {
   const workspace = await lockAiAccess(tx, workspaceId, campaignId);
   if (!workspace) return { workspace: null, settings: null, telegramState: null };
@@ -17,7 +26,10 @@ export async function lockPublishing(tx: Prisma.TransactionClient, workspaceId: 
 }
 
 export async function queuePublication(db: PrismaClient, workspaceId: string, draftId: string, revision: number, expectedCampaignId?: string) {
-  return db.$transaction(async tx => {
+  return db.$transaction(tx => queuePublicationInTransaction(tx, workspaceId, draftId, revision, expectedCampaignId));
+}
+
+export async function queuePublicationInTransaction(tx: Prisma.TransactionClient, workspaceId: string, draftId: string, revision: number, expectedCampaignId?: string, automaticGeneration?: number) {
     const workspace = await lockAiAccess(tx, workspaceId);
     if (!connectedWorkspace(workspaceId) || !hasAiAccess(workspace)) throw new PublishingError("Connected, approved automation access is required.");
     const draft = await tx.aiDraft.findFirst({ where: { id: draftId, workspaceId, ...(expectedCampaignId ? { campaignId: expectedCampaignId } : {}) }, include: { originalPost: { include: { sourceChannel: true } }, publications: true, campaign: true } });
@@ -32,18 +44,21 @@ export async function queuePublication(db: PrismaClient, workspaceId: string, dr
     if (draft.publications.some(p => BLOCKING_PUBLICATIONS.includes(p.status as typeof BLOCKING_PUBLICATIONS[number])))
       throw new PublishingError("This draft already has a queued, sending, uncertain or published publication.");
     const previous = draft.publications.find(p => p.draftRevision === revision);
+    if (automaticGeneration === undefined) await tx.aiDraft.update({ where: { id: draftId }, data: { manualAttentionReason: null } });
     if (previous) {
       if (previous.destinationChatId !== settings.destinationChatId || previous.destinationRevision !== settings.revision)
         throw new PublishingError("The destination changed. Save and approve a new draft revision before publishing there.");
-      await tx.telegramPublication.update({ where: { id: previous.id }, data: { status: "QUEUED", availableAt: new Date(), lastError: null, lockToken: null, lockedUntil: null } });
+      if (automaticGeneration !== undefined) throw new PublishingError("Automatic retries cannot reuse a publication. Review manually.");
+      await tx.telegramPublication.update({ where: { id: previous.id }, data: { deliveryMode: "MANUAL", status: "QUEUED", availableAt: new Date(), lastError: null, lockToken: null, lockedUntil: null } });
       return previous.id;
     }
     return (await tx.telegramPublication.create({ data: {
       workspaceId, draftId, draftRevision: revision, text: draft.finalText,
+      deliveryMode: automaticGeneration === undefined ? "MANUAL" : "AUTOMATIC",
+      queuedAutomatically: automaticGeneration !== undefined, autoSendGeneration: automaticGeneration,
       destinationChatId: settings.destinationChatId, destinationUsername: settings.destinationUsername,
       destinationRevision: settings.revision, randomId: (randomBytes(8).readBigUInt64BE() & (BigInt(2) ** BigInt(63) - BigInt(1)) || BigInt(1)).toString(),
     } })).id;
-  });
 }
 
 export async function claimPublication(db: PrismaClient, workspaceId: string) {
@@ -69,6 +84,11 @@ export async function claimPublication(db: PrismaClient, workspaceId: string) {
     for (const { id } of ids) {
       const p = await tx.telegramPublication.findUniqueOrThrow({ where: { id }, include: { draft: { include: { campaign: { include: { publishingSettings: true } } } } } });
       const settings = p.draft.campaign.publishingSettings!;
+      if (p.deliveryMode === "AUTOMATIC" && !await automaticPublicationEligible(tx, p)) {
+        await tx.telegramPublication.update({ where: { id }, data: { status: "FAILED", lastError: "Auto-send is no longer eligible. Review and publish manually." } });
+        await tx.aiDraft.update({ where: { id: p.draftId }, data: { manualAttentionReason: "Auto-send is no longer eligible. Review and publish manually." } });
+        continue;
+      }
       if (p.destinationRevision !== settings.revision || p.destinationChatId !== settings.destinationChatId) {
         await tx.telegramPublication.update({ where: { id }, data: { status: "FAILED", lastError: "Campaign destination settings changed. This snapshot was not redirected or sent." } });
         continue;
@@ -88,6 +108,7 @@ export async function authorizePublication(tx: Prisma.TransactionClient, workspa
   const p = await tx.telegramPublication.findFirst({ where: { id, workspaceId, lockToken: token, status: "SENDING", lockedUntil: { gt: new Date() } },
     include: { draft: { include: { campaign: { include: { publishingSettings: true } }, originalPost: { include: { sourceChannel: true } } } } } });
   if (!p) return false;
+  if (p.deliveryMode === "AUTOMATIC" && !await automaticPublicationEligible(tx, p)) return false;
   const settings = p.draft.campaign.publishingSettings;
   const membership = await membershipFor(tx, workspaceId, p.draft.campaignId, p.draft.originalPost.sourceChannelId);
   return Boolean(connectedWorkspace(workspaceId) && hasAiAccess(workspace) && settings?.enabled && settings.verifiedAt && !settings.verificationPending &&

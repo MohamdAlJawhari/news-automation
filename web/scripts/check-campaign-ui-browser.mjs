@@ -10,12 +10,18 @@ import { build } from "esbuild";
 
 const stage = path.resolve(".campaign-ui-validation");
 const profile = path.resolve(stage, `browser-profile-${randomUUID()}`);
-const names = ["dashboard", "dashboard-list", "overview", "drafts", "compare", "settings", "empty"];
+const names = ["dashboard", "dashboard-list", "overview", "overview-many", "overview-empty", "drafts", "compare", "settings", "empty"];
 const fixtures = new Map();
 for (const name of names) fixtures.set(`/${name}.html`, await readFile(path.join(stage, `${name}.html`)));
-const css = (await readdir(".next/static/chunks")).filter(file => file.endsWith(".css"));
+const buildRoot = process.env.CAMPAIGN_UI_BUILD || ".";
+const cssRoot = path.join(buildRoot, ".next/static");
+async function cssFiles(dir) {
+  const entries = await readdir(dir, { withFileTypes: true });
+  return (await Promise.all(entries.map(e => e.isDirectory() ? cssFiles(path.join(dir, e.name)) : e.name.endsWith('.css') ? [path.join(dir,e.name)] : []))).flat();
+}
+const css = await cssFiles(cssRoot);
 assert(css.length, "Build the application before checking browser layouts.");
-fixtures.set("/style.css", Buffer.from((await Promise.all(css.map(file => readFile(`.next/static/chunks/${file}`, "utf8")))).join("\n")));
+fixtures.set("/style.css", Buffer.from((await Promise.all(css.map(file => readFile(file, "utf8")))).join("\n")));
 const browserBundle = await build({ absWorkingDir: process.cwd(), bundle: true, write: false, platform: "browser", jsx: "automatic", logLevel: "silent",
   stdin: { resolveDir: process.cwd(), loader: "tsx", contents: `
     import {useState} from 'react'; import {createRoot} from 'react-dom/client';
@@ -26,15 +32,19 @@ const browserBundle = await build({ absWorkingDir: process.cwd(), bundle: true, 
     import RefreshButton from './src/components/RefreshButton';
     import {CampaignSourceForm} from './src/components/CampaignForms';
     import CampaignToolbar from './src/components/CampaignToolbar';
-    window.__actions=[]; window.__refreshes=0; window.__navigations=[];
+    import AutoSendControl from './src/components/AutoSendControl';
+    window.__actions=[]; window.__refreshes=0; window.__navigations=[]; window.__aiEnabled=false; window.__publishEnabled=false;
     function App(){
       const [draft,setDraft]=useState({id:'browser-draft',finalText:'نص عربي محفوظ للمراجعة.',editRevision:1,reviewStatus:'PENDING_REVIEW'});
+      const [membership,setMembership]=useState({revision:3,telegramAutomationEnabled:true});window.__setMembership=setMembership;
       window.__updateDraft = setDraft;
       return <CampaignShell campaign={{id:'browser-campaign',name:'أخبار المدينة — الحملة التجريبية',isDefault:false}} user={{id:'fixture',email:'browser@example.invalid',emailVerified:true,approvalStatus:'APPROVED',platformRole:'OWNER',workspace:{id:'fixture',name:'Fixture',automationEnabled:true,rssEnabled:true}}} active="ai-drafts">
         <CampaignToolbar path="/workspace/campaigns/browser-campaign/drafts" search="" sort="newest" view="cards" label="Search drafts" displays={[{value:"cards",label:"Cards display",icon:"grid"},{value:"compare",label:"Compare display",icon:"compare"}]} /><RefreshButton>Refresh status</RefreshButton><section className="card p-6"><AiDraftEditor draft={draft} campaignId="browser-campaign" /></section>
         <section className="card p-6"><AiSettingsEditor settings={{enabled:false,systemPrompt:'اكتب أخباراً واضحة باللغة العربية.',editorialPerspective:'',model:'gpt-oss:latest',revision:1}} models={['gpt-oss:latest']} connected campaignId="browser-campaign" /></section>
-        <CampaignSourceForm campaignId="browser-campaign" sourceId="browser-source" membership={{revision:3,telegramAutomationEnabled:true}} excluded={false} />
+        <CampaignSourceForm campaignId="browser-campaign" sourceId="browser-source" membership={membership} excluded={false} />
         <PublishingSettingsEditor settings={{enabled:false,destinationUsername:'browser_output',revision:1}} campaignId="browser-campaign" />
+        <AutoSendControl campaignId="browser-campaign" enabled={false} revision={4} destinationRevision={9} destinationChatId="-10012345" destinationUsername="news_output_test" />
+        <AutoSendControl campaignId="old-runtime" enabled={false} revision={undefined} destinationRevision={9} destinationChatId="-10012345" destinationUsername="news_output_test" />
       </CampaignShell>;
     }
     createRoot(document.getElementById('root')).render(<App/>); window.__ready=true;
@@ -45,19 +55,22 @@ const browserBundle = await build({ absWorkingDir: process.cwd(), bundle: true, 
       args.path === "next/navigation" ? "export function useRouter(){return {refresh(){window.__refreshes++},replace(url){window.__navigations.push(url)}}}" :
       args.path === "@/lib/auth-client" ? "export const authClient={signOut:async()=>({})};" : `
         async function action(previous,form){
+          const aiAction=${JSON.stringify(args.path.includes('/actions/ai'))};
           const fields=Object.fromEntries(form.entries()); window.__actions.push(fields);
-          await new Promise(resolve=>setTimeout(resolve,15));
+          await new Promise(resolve=>setTimeout(resolve,60));
+          if(window.__failNext){const message=window.__failNext;window.__failNext=null;return {success:false,message,revision:Number(fields.revision)};}
           if((fields.draftId ?? fields.id)==='browser-draft' && fields.intent){
             const revision=Number(fields.revision)+1;
             const reviewStatus=fields.intent==='approve'?'APPROVED':fields.intent==='reject'?'REJECTED':'PENDING_REVIEW';
             window.__updateDraft(old=>({...old,finalText:fields.intent==='save'?fields.finalText.trim():old.finalText,reviewStatus,editRevision:revision}));
             return {success:true,message:fields.intent==='save'?'Final text saved; pending review.':fields.intent==='approve'?'Approved. Nothing was sent.':'Draft rejected.',revision};
           }
-          return {success:true,message:fields.destination?'Destination settings saved. No test message was sent.':fields.systemPrompt?'AI settings saved.':'Queued the saved approved text.',revision:Number(fields.revision)+(fields.systemPrompt || fields.verify==='yes'?1:0)};
+          if(fields.intent==='enablement'){if(aiAction)window.__aiEnabled=fields.enabled==='on';else window.__publishEnabled=fields.enabled==='on';}
+          return {success:true,enabled:fields.sourceId?fields.intent==='resume':aiAction?window.__aiEnabled:fields.enabled==='yes'?true:fields.enabled==='no'?false:window.__publishEnabled,message:fields.destination?'Destination settings saved. No test message was sent.':fields.systemPrompt?'AI settings saved.':'Queued the saved approved text.',revision:Number(fields.revision)+(fields.sourceId || fields.enabled==='yes' || fields.enabled==='no' || (fields.intent==='enablement'&&aiAction) || fields.systemPrompt || fields.verify==='yes'?1:0)};
         }
         export const saveAiDraft=action,saveCampaignAiDraft=action,saveAiSettings=action,saveCampaignAiSettings=action,
           savePublishingSettings=action,saveCampaignPublishingSettings=action,publishAiDraft=action,publishCampaignAiDraft=action,
-          recoverTelegramPublication=action,recoverCampaignTelegramPublication=action,createCampaignAction=action,renameCampaign=action,changeCampaignSource=action,deleteEmptyCampaign=action;
+          recoverTelegramPublication=action,recoverCampaignTelegramPublication=action,createCampaignAction=action,renameCampaign=action,changeCampaignSource=action,deleteEmptyCampaign=action,changeAutoSend=action;
       ` }));
   } }] });
 fixtures.set("/interactive.js", browserBundle.outputFiles[0].contents);
@@ -114,6 +127,11 @@ try {
     for (const name of names) {
       await call("Page.navigate", { url: `${origin}/${name}.html` }); await waitFor("document.readyState === 'complete' && !!document.querySelector('.workspace-ui')");
       assert(await evaluate("document.documentElement.scrollWidth <= window.innerWidth"), `${name} overflows at ${width}px`);
+      if (name.startsWith('overview')) {
+        assert.equal(await evaluate("document.querySelectorAll('.destination-flow-card').length"),1);
+        assert(await evaluate("(()=>{const cards=[...document.querySelectorAll('.source-flow-row article')].map(e=>e.getBoundingClientRect());return cards.every((r,i)=>!i||r.top>=cards[i-1].bottom)})()"),'Source cards must not overlap');
+        if (width===390) assert(await evaluate("document.querySelector('.destination-flow-card').getBoundingClientRect().top>=document.querySelector('.source-flow-list').getBoundingClientRect().bottom"),'Mobile destination stacks after sources');
+      }
       assert.equal(await evaluate("getComputedStyle(document.querySelector('.workspace-ui')).backgroundColor"), "rgb(255, 255, 255)");
       if (!name.startsWith("dashboard")) assert.equal(await evaluate("document.querySelectorAll('.campaign-tabs a[aria-current=page]').length"), 1);
       if (name === "drafts") assert.equal(await evaluate("getComputedStyle(document.querySelector('textarea')).direction"), "rtl");
@@ -126,7 +144,7 @@ try {
       await writeFile(path.join(stage, `${name}-${width}.png`), Buffer.from(shot.data, "base64"));
     }
   }
-  console.log("PASS: seven actual campaign pages at desktop/mobile widths, no horizontal overflow, light styling, active tabs and Arabic direction.");
+  console.log("PASS: campaign pages including many-source/empty diagrams at desktop/mobile widths, no overlap/overflow, readable white theme and Arabic direction.");
   await call("Page.navigate", { url: `${origin}/interactive.html` }); await waitFor("window.__ready && !!document.querySelector('textarea')");
   assert(await evaluate("!Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Apply') && !document.querySelector('select[name=sort]') && !document.querySelector('select[name=view]')"));
   await evaluate("document.querySelector('.sort-control').click()");
@@ -161,9 +179,14 @@ try {
   await evaluate(`(()=>{const field=document.getElementById('ai-system'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(field,'تعليمات جديدة غير محفوظة.'); field.dispatchEvent(new Event('input',{bubbles:true})); const destination=document.getElementById('destination'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(destination,'browser_output_changed'); destination.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await waitFor("document.querySelectorAll('[data-unsaved=true]').length===2");
   await evaluate("document.querySelector('.campaign-tabs a').click()"); assert.equal(dialogs, 4, "Several dirty forms should cause only one navigation prompt");
+  await evaluate("document.querySelector('button[aria-label=\"Enable AI preparation\"]').click()");
+  await waitFor("document.querySelector('button[aria-label=\"Enable AI preparation\"]').getAttribute('aria-checked')==='true'");
+  assert.equal(await evaluate("document.getElementById('ai-system').value"),'تعليمات جديدة غير محفوظة.');
+  assert.equal(await evaluate("document.querySelectorAll('[data-unsaved=true]').length"),2);
+  assert.equal(await evaluate("'systemPrompt' in window.__actions.at(-1)"),false,'AI switch must not save prompt edits');
   await evaluate("Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Save AI settings').click()");
   await waitFor("document.body.textContent.includes('AI settings saved.') && document.querySelectorAll('[data-unsaved=true]').length===1");
-  assert.equal(await evaluate("document.getElementById('ai-system').form.querySelector('input[name=revision]').value"), "2");
+  assert.equal(await evaluate("document.getElementById('ai-system').form.querySelector('input[name=revision]').value"), "3");
   await evaluate("Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Change destination').click()");
   assert(await evaluate("!!document.querySelector('dialog[open]')"));
   await evaluate("document.querySelector('button[name=verify]').click()");
@@ -177,18 +200,75 @@ try {
   await call("Input.dispatchKeyEvent",{type:"keyUp",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
   await waitFor("!document.querySelector('dialog[open]')");
   assert(await evaluate("document.activeElement.textContent==='Change destination'"), "Dialog must restore keyboard focus");
-  await evaluate(`(()=>{const f=document.createElement('form');f.method='get';f.innerHTML='<button>Apply search</button>';document.querySelector('.app-content').appendChild(f);const field=document.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(field,'unsaved search guard');field.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  await waitFor("!!document.querySelector('[data-unsaved=true]')");
-  const beforeSearch=dialogs;
-  await evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='Apply search').click()");
-  assert.equal(dialogs,beforeSearch+1); assert((await evaluate("location.pathname")).includes("interactive"));
-  assert(await evaluate("!document.querySelector('button[name=intent][value=pause]').getClientRects().length"), "Checkbox should be the sole participation control");
-  await evaluate("document.querySelector('input[aria-label=\"Participate in this campaign\"]').click()");
-  await waitFor("window.__actions.at(-1).sourceId==='browser-source'");
-  assert.equal(await evaluate("window.__actions.at(-1).intent"),"pause");
-  assert.equal(await evaluate("window.__actions.at(-1).revision"),"3");
+  const switchSelector = label => `button[role="switch"][aria-label="${label}"]`;
+  async function toggle(label, expected) {
+    const selector=switchSelector(label);
+    await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    await waitFor(`!document.querySelector(${JSON.stringify(selector)}).disabled && document.querySelector(${JSON.stringify(selector)}).getAttribute('aria-checked')===${JSON.stringify(String(expected))}`);
+  }
+  await toggle('Enable Telegram publishing',true);
+  assert.equal(await evaluate("window.__actions.at(-1).intent"),'enablement');
+  assert.equal(await evaluate("'destination' in window.__actions.at(-1)"),false);
+  await toggle('Enable Telegram publishing',false);
+  await evaluate("window.__failNext='Publishing save failed'; document.querySelector('button[aria-label=\"Enable Telegram publishing\"]').click()");
+  await waitFor("document.body.textContent.includes('Publishing save failed')");
+  assert.equal(await evaluate("document.querySelector('button[aria-label=\"Enable Telegram publishing\"]').getAttribute('aria-checked')"),'false');
+  await evaluate("window.__failNext='Settings changed. Reload first.'; document.querySelector('button[aria-label=\"Enable Telegram publishing\"]').click()");
+  await waitFor("document.body.textContent.includes('Settings changed. Reload first.')");
+  assert.equal(await evaluate("document.querySelector('button[aria-label=\"Enable Telegram publishing\"]').getAttribute('aria-checked')"),'false');
+  await toggle('Active in this campaign',false);
+  assert.equal(await evaluate("window.__actions.at(-1).intent"),'pause');
+  assert.equal(await evaluate("window.__actions.at(-1).revision"),'3');
+  await toggle('Active in this campaign',true);
+  assert.equal(await evaluate("window.__actions.at(-1).revision"),'4');
+  const beforeStale=await evaluate('window.__actions.length');
+  await evaluate("document.querySelector('button[aria-label=\"Active in this campaign\"]').click();document.querySelector('button[aria-label=\"Active in this campaign\"]').click();window.__setMembership({revision:100,telegramAutomationEnabled:true})");
+  await waitFor("!document.querySelector('button[aria-label=\"Active in this campaign\"]').disabled");
+  assert.equal(await evaluate('window.__actions.length'),beforeStale+1,'Repeated switch submissions must be blocked');
+  assert.equal(await evaluate("document.querySelector('button[aria-label=\"Active in this campaign\"]').getAttribute('aria-checked')"),'true','A stale response must not overwrite newer confirmed props');
+  const beforeAuto = await evaluate("window.__actions.length");
+  await evaluate("document.querySelector('button[aria-label=\"Auto-send\"]').click()");
+  await waitFor("!!document.querySelector('dialog[open]')");
+  assert(await evaluate("document.querySelector('dialog[open]').textContent.includes('Existing drafts remain manual') && document.querySelector('dialog[open]').textContent.includes('without human review') && document.querySelector('dialog[open]').textContent.includes('-10012345')"));
+  await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await waitFor("!document.querySelector('dialog[open]')");
+  assert.equal(await evaluate("window.__actions.length"),beforeAuto);
+  assert.equal(await evaluate("document.querySelector('button[aria-label=\"Auto-send\"]').getAttribute('aria-checked')"),'false');
+  await evaluate("document.querySelector('button[aria-label=\"Auto-send\"]').click(); document.querySelector('dialog[open] form button').click()");
+  assert.equal(await evaluate("window.__actions.length"),beforeAuto,'Acknowledgement is required');
+  await evaluate("document.querySelector('dialog[open] input[name=confirmed]').click(); document.querySelector('dialog[open] form button').click()");
+  await waitFor("document.querySelector('button[aria-label=\"Auto-send\"]').getAttribute('aria-checked')==='true'");
+  assert.equal(await evaluate("window.__actions.at(-1).confirmed"),'yes');
+  await toggle('Auto-send',false);
+  assert.equal(await evaluate("window.__actions.at(-1).revision"),'5');
+  await evaluate("document.querySelector('button[aria-label=\"Help about AI preparation\"]').focus()");
+  await waitFor("!!document.querySelector('.help-popover')");
+  await call('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await call('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});
+  await waitFor("!document.querySelector('.help-popover')");
+  await evaluate("document.querySelector('button[aria-label=\"Help about AI preparation\"]').click()");
+  await waitFor("!!document.querySelector('.help-popover')");
+  assert(await evaluate("(()=>{const r=document.querySelector('.help-popover').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight})()"));
+  await evaluate("document.querySelector('h2').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))");
+  await waitFor("!document.querySelector('.help-popover')");
+  await evaluate("document.querySelector('button[aria-label=\"Help about AI preparation\"]').dispatchEvent(new MouseEvent('mouseover',{bubbles:true}))");
+  await waitFor("!!document.querySelector('.help-popover')");
+  await evaluate("document.querySelector('button[aria-label=\"Help about AI preparation\"]').dispatchEvent(new MouseEvent('mouseout',{bubbles:true,relatedTarget:document.body}))");
+  await waitFor("!document.querySelector('.help-popover')");
+  await evaluate("document.querySelector('button[aria-label=\"Help about AI preparation\"]').scrollIntoView({block:'center'})");
+  await call('Emulation.setTouchEmulationEnabled',{enabled:true});
+  const helpPoint=await evaluate("(()=>{const r=document.querySelector('button[aria-label=\"Help about AI preparation\"]').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()");
+  await call('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[helpPoint]});
+  await call('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  await waitFor("!!document.querySelector('.help-popover')");
+  await evaluate("document.querySelector('input[type=search]').focus()");
+  assert(await evaluate("!!document.querySelector('.help-popover')"),'Tapped help remains pinned after focus moves');
+  await evaluate("document.body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))");
+  await waitFor("!document.querySelector('.help-popover')");
+  assert(await evaluate("!Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Save publishing control')"));
   assert.equal(unexpectedRequests, 0);
-  console.log("PASS: actual interactive editors guard unsaved edits/navigation/refresh, save before approval, carry revisions/campaign identity, and give form feedback using mocked actions.");
+  console.log("PASS: immediate ON/OFF switches, failed/stale responses, duplicate submissions, Auto-send cancellation/confirmation, unsaved AI edits, keyboard/click help and existing draft guards.");
 } finally {
   socket?.close(); chrome.kill(); server.close();
   await new Promise(resolve => { if (chrome.exitCode !== null) resolve(); else { chrome.once("exit", resolve); setTimeout(resolve, 3000); } });

@@ -4,6 +4,8 @@ import { connectedWorkspace, effectivePrompt, LEASE_MS, MAX_ATTEMPTS, Preparatio
 import { hasAiAccess, lockAiAccess } from "../src/lib/ai-db";
 import { membershipFor, withinBoundary } from "../src/lib/campaign-execution";
 import { rewriteWithOllama } from "../src/lib/ollama";
+import { lockPublishing } from "../src/lib/publishing-db";
+import { automaticallyQueueDraft } from "../src/lib/auto-send";
 
 type Claim = { id: string; workspaceId: string; originalPostId: string; campaignId: string; lockToken: string; attempts: number };
 type Generator = typeof rewriteWithOllama;
@@ -70,7 +72,7 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
   let generationMembershipRevision: number | undefined;
   try {
     const prepared = await prisma.$transaction(async (tx) => {
-      const workspace = await lockAiAccess(tx, claim.workspaceId, claim.campaignId);
+      const { workspace, settings: publishingSettings } = await lockPublishing(tx, claim.workspaceId, claim.campaignId);
       if (!await ownsClaim(tx, claim)) return null;
       const settings = workspace?.aiSettings;
       const original = await tx.originalPost.findUniqueOrThrow({
@@ -95,7 +97,9 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
         return null;
       }
       await tx.processingJob.update({ where: { id: claim.id }, data: { attempts: { increment: 1 } } });
-      return { revision: settings.revision, membershipRevision: membership!.revision, model: settings.model,
+      const job = await tx.processingJob.findUniqueOrThrow({ where: { id: claim.id } });
+      return { autoSendGeneration: job.autoSendGeneration, destinationRevision: publishingSettings!.revision,
+        revision: settings.revision, membershipRevision: membership!.revision, model: settings.model,
         prompt: effectivePrompt(settings), originalText: original.originalText };
     }, { timeout: 10000 });
     if (!prepared) return true;
@@ -117,15 +121,14 @@ export async function processTelegramJob(prisma: PrismaClient, generate: Generat
       const existing = await tx.aiDraft.findUnique({ where: { originalPostId_campaignId: { originalPostId: claim.originalPostId, campaignId: claim.campaignId } } });
       if (existing && existing.campaignId !== claim.campaignId) throw new PreparationError("Existing draft campaign differs from claimed job.", false);
       // Hold the claim row until commit; unique constraint and no-op update preserve edits.
-      if (text !== null) {
-        const draft = await tx.aiDraft.upsert({
-          where: { originalPostId_campaignId: { originalPostId: claim.originalPostId, campaignId: claim.campaignId } },
-          create: { workspaceId: claim.workspaceId, originalPostId: claim.originalPostId, campaignId: claim.campaignId,
+      if (text !== null && !existing) {
+        const draft = await tx.aiDraft.create({
+          data: { workspaceId: claim.workspaceId, originalPostId: claim.originalPostId, campaignId: claim.campaignId,
             aiText: text, finalText: text, model: prepared.model,
             effectivePrompt: prepared.prompt, settingsRevision: prepared.revision },
-          update: {},
         });
         if (draft.campaignId !== claim.campaignId) throw new PreparationError("Concurrent draft campaign differs from claimed job.", false);
+        await automaticallyQueueDraft(tx, claim.workspaceId, claim.campaignId, draft.id, prepared.autoSendGeneration, prepared.destinationRevision);
       }
       if (!await ownsClaim(tx, claim)) throw new PreparationError("Claim expired before commit.");
       const completed = await tx.processingJob.updateMany({

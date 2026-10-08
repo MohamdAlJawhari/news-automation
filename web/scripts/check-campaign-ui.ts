@@ -1,4 +1,5 @@
 import { ensureDefaultCampaign } from "../src/lib/default-campaign";
+import { setCampaignMembership } from "../src/lib/campaign-execution";
 // Real PostgreSQL in a disposable schema; session/Next boundaries are mocked.
 // No Telegram connection, credentials or network sends are used by this check.
 import { loadEnvConfig } from "@next/env";
@@ -39,7 +40,7 @@ type Routes = { GET: (r: Request) => Promise<Response>; POST: (r: Request) => Pr
 async function load<T>(file: string): Promise<T> {
   const result = await build({ absWorkingDir: process.cwd(), tsconfigRaw: {},
     stdin: { contents: await readFile(file, "utf8"), loader: file.endsWith(".tsx") ? "tsx" : "ts", resolveDir: process.cwd() }, bundle: true,
-    platform: "node", format: "cjs", jsx: "automatic", external: ["react", "react/jsx-runtime"], write: false, logLevel: "silent",
+    platform: "node", format: "cjs", jsx: "automatic", external: ["react", "react/jsx-runtime", "react-dom"], write: false, logLevel: "silent",
     plugins: [{ name: "publishing-session-fixture", setup(builder) {
       builder.onResolve({ filter: /^(@\/lib\/(prisma|access|auth-client|auth)|next\/(navigation|cache|link|headers)|server-only)$/ }, args => ({ path: args.path, namespace: "fixture" }));
       builder.onLoad({ filter: /.*/, namespace: "fixture" }, args => ({ contents:
@@ -141,6 +142,19 @@ async function main() {
       assert((await response.json()).accepted);
     }
     assert.equal(await prisma.telegramPublication.count(), 0, "Settings and verification must never publish");
+    // Immediate switches only write their own setting and retain snapshot revisions.
+    const beforeAi = await prisma.campaignAiSettings.findUniqueOrThrow({ where: { campaignId: campaignA } });
+    const switchedAi = await ai.saveCampaignAiSettings({ ...initial, revision: beforeAi.revision }, form({ campaignId: campaignA, intent: "enablement", revision: String(beforeAi.revision), enabled: "" }));
+    assert(switchedAi.success); assert.equal(switchedAi.enabled, false);
+    const afterAi = await prisma.campaignAiSettings.findUniqueOrThrow({ where: { campaignId: campaignA } });
+    assert.equal(afterAi.systemPrompt, beforeAi.systemPrompt); assert.equal(afterAi.model, beforeAi.model); assert.deepEqual(afterAi.activatedAt, beforeAi.activatedAt);
+    assert.equal((await ai.saveCampaignAiSettings({ ...initial, revision: beforeAi.revision }, form({ campaignId: campaignA, intent: "enablement", revision: String(beforeAi.revision), enabled: "on" }))).success, false);
+    assert((await ai.saveCampaignAiSettings({ ...initial, revision: afterAi.revision }, form({ campaignId: campaignA, intent: "enablement", revision: String(afterAi.revision), enabled: "on" }))).success);
+    const beforePublish = await prisma.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId: campaignA } });
+    for (const enabled of ["", "on"]) assert((await publishing.saveCampaignPublishingSettings(initial, form({ campaignId: campaignA, intent: "enablement", revision: String(beforePublish.revision), enabled }))).success);
+    const afterPublish = await prisma.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId: campaignA } });
+    assert.equal(afterPublish.destinationChatId, beforePublish.destinationChatId); assert.equal(afterPublish.revision, beforePublish.revision); assert.deepEqual(afterPublish.verifiedAt, beforePublish.verifiedAt);
+    assert.equal((await publishing.saveCampaignPublishingSettings(initial, form({ campaignId: campaignA, intent: "enablement", revision: "999", enabled: "" }))).success, false);
     const destinationAlias = await prisma.sourceChannel.create({ data: { workspaceId, username: "ui_destination_alias", telegramChatId: "-10011111", enabled: false } });
     assert.equal((await management.changeCampaignSource(initial, form({ campaignId: campaignB, sourceId: destinationAlias.id, intent: "join" }))).success, false);
     assert.equal(await prisma.campaignSource.count({ where: { sourceChannelId: destinationAlias.id } }), 0);
@@ -172,6 +186,15 @@ async function main() {
 
     const props = (campaignId: string) => ({ params: Promise.resolve({ campaignId }), searchParams: Promise.resolve({}) });
     const html = async (file: string, campaignId = campaignA, query = {}) => renderToStaticMarkup(await (await load<Page>(file)).default({...props(campaignId),searchParams:Promise.resolve(query)}));
+    const settingsPath = "src/app/workspace/campaigns/[campaignId]/settings/page.tsx";
+    for (const enabled of [false, true]) {
+      const currentAi = await prisma.campaignAiSettings.findUniqueOrThrow({ where: { campaignId: campaignA } });
+      assert((await ai.saveCampaignAiSettings({ ...initial, revision: currentAi.revision }, form({ campaignId: campaignA, intent: "enablement", revision: String(currentAi.revision), enabled: enabled ? "on" : "" }))).success);
+      assert((await html(settingsPath)).includes(`aria-label="Enable AI preparation" title="Enable AI preparation" aria-checked="${enabled}"`));
+      const currentPub = await prisma.campaignPublishingSettings.findUniqueOrThrow({ where: { campaignId: campaignA } });
+      assert((await publishing.saveCampaignPublishingSettings(initial, form({ campaignId: campaignA, intent: "enablement", revision: String(currentPub.revision), enabled: enabled ? "on" : "" }))).success);
+      assert((await html(settingsPath)).includes(`aria-label="Enable Telegram publishing" title="Enable Telegram publishing" aria-checked="${enabled}"`));
+    }
     const pendingPost = await prisma.originalPost.create({ data: { workspaceId, sourceChannelId: source.id, telegramChatId: source.telegramChatId!, telegramMessageId: 2, originalText: "Another synthetic original", publishedAt: new Date(0) } });
     await prisma.aiDraft.create({ data: { workspaceId, campaignId: campaignB, originalPostId: pendingPost.id, aiText: "B only pending review fixture", finalText: "B only pending review fixture", model: "mock", effectivePrompt: "B prompt", settingsRevision: 1 } });
     // Search covers all matching data before pagination, including later pages.
@@ -187,7 +210,8 @@ async function main() {
     await prisma.aiDraft.update({where:{id:searchDraft.id},data:{reviewStatus:"REJECTED"}});
     const filteredOverview = await html("src/app/workspace/campaigns/[campaignId]/page.tsx", campaignA, {q:"foreign_source",sort:"oldest",view:"list"});
     assert(!filteredOverview.includes("@ui_shared_source") && filteredOverview.includes("No sources match your search."));
-    assert(filteredOverview.includes("campaign-collection list"));
+    assert(filteredOverview.includes("participation-flow"));
+    assert(!filteredOverview.includes('aria-label="Auto-send"') && !filteredOverview.includes("Enable Telegram publishing"), "Overview must only manage sources and destination");
     const dashboard = await html("src/app/workspace/campaigns/page.tsx");
     assert(dashboard.includes("أخبار المدينة") && dashboard.includes("International news"));
     assert(dashboard.split("</article>").some(article => article.includes("International news") && article.includes("1 pending review")));
@@ -253,7 +277,11 @@ async function main() {
       overview: await html("src/app/workspace/campaigns/[campaignId]/page.tsx"),
       settings: await html("src/app/workspace/campaigns/[campaignId]/settings/page.tsx"),
       empty: await html("src/app/workspace/campaigns/[campaignId]/drafts/page.tsx", defaultCampaign.id) };
-    for (const [name, body] of Object.entries(pages)) await writeFile(`.campaign-ui-validation/${name}.html`, document(body));
+    const manySources = await prisma.sourceChannel.createManyAndReturn({ data: Array.from({ length: 35 }, (_, i) => ({ workspaceId, username: `many_source_${i}`, title: i % 2 ? `مصدر الأخبار ${i}` : `News source ${i}` })) });
+    for (let i = 0; i < manySources.length; i++) await prisma.$transaction(tx => setCampaignMembership(tx, workspaceId, campaignA, manySources[i].id, i % 2 === 0));
+    const manyOverview = await html("src/app/workspace/campaigns/[campaignId]/page.tsx");
+    const emptyOverview = await html("src/app/workspace/campaigns/[campaignId]/page.tsx", campaignA, { q: "no_match_source" });
+    for (const [name, body] of Object.entries({ ...pages, "overview-many": manyOverview, "overview-empty": emptyOverview })) await writeFile(`.campaign-ui-validation/${name}.html`, document(body));
     const raceCampaign = (await management.createCampaignAction(initial,form({name:"Concurrent fixture"}))).campaignId!;
     const racePost = await prisma.originalPost.create({data:{workspaceId,sourceChannelId:source.id,telegramChatId:source.telegramChatId!,telegramMessageId:999,originalText:"Concurrent ingestion fixture",publishedAt:new Date(0)}});
     const concurrent = new Client({connectionString}); await concurrent.connect();
